@@ -1,0 +1,19 @@
+name: docs-first
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Block deprecated Next.js patterns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run docs-first scan
+        run: node .github/scripts/docs-first-check.mjs
