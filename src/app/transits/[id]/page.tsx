@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { forwardStatusUpdate } from "@/lib/routing";
 import { requireUser } from "@/lib/auth";
+import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -151,7 +152,7 @@ export default async function TransitDetailPage({
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-ink-muted font-semibold">
-            Transit
+            Booking
           </p>
           <h1 className="text-3xl font-bold tracking-tight mt-1">
             <code className="text-2xl">{transit.originatorBookingExternalId}</code>
@@ -160,7 +161,7 @@ export default async function TransitDetailPage({
             <code>{transit.id}</code>
           </div>
         </div>
-        <Link href="/bookings" className="text-sm text-ink-muted hover:text-ink">← All transits</Link>
+        <Link href="/bookings" className="text-sm text-ink-muted hover:text-ink">← All bookings</Link>
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
@@ -196,7 +197,7 @@ export default async function TransitDetailPage({
               <KV k="Resolved from" v={<code className="text-xs">{fs.resolvedFromFeeConfigId}</code>} />
             </>
           ) : (
-            <p className="text-sm text-ink-muted">No fee snapshot — transit didn&apos;t reach routing stage.</p>
+            <p className="text-sm text-ink-muted">No fee snapshot — booking didn&apos;t reach routing stage.</p>
           )}
         </Section>
       </div>
@@ -226,7 +227,7 @@ export default async function TransitDetailPage({
 
       {isTerminal && (
         <div className="card p-4 text-sm text-ink-muted">
-          Transit is in terminal state <code>{transit.status}</code>. No further status changes will be accepted.
+          Booking is in terminal state <code>{transit.status}</code>. No further status changes will be accepted.
         </div>
       )}
 
@@ -301,17 +302,12 @@ function KV({ k, v }: { k: string; v: React.ReactNode }) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === "completed"
-      ? "badge-success"
-      : status === "cancelled" || status === "failed" || status === "no_match" || status.startsWith("error_")
-      ? "badge-danger"
-      : status === "paused"
-      ? "badge-warning"
-      : ["pushed", "accepted", "driver_assigned", "en_route", "on_board"].includes(status)
-      ? "badge-info"
-      : "badge-neutral";
-  return <span className={cls}>{status.replace(/_/g, " ")}</span>;
+  const meta = statusMeta(status);
+  return (
+    <span className={statusBadgeClass(status)} title={meta.description}>
+      {statusLabel(status)}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------

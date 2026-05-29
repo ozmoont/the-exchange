@@ -11,87 +11,271 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { resolveFeeSnapshot } from "./fees";
 import { getAdapterForPartner } from "@/adapters/registry";
 import type { NormalisedBooking } from "./types";
+import type { FeeSnapshot } from "@/db/schema";
 
 /**
- * Routing engine. Given a booking received from an originator, pick an eligible
- * recipient and push the booking via the recipient's adapter. Idempotent on
- * (originatorId, originatorBookingExternalId).
+ * Routing engine.
  *
- * Returns the transit id whether the route succeeded, failed, or was paused.
+ *   1. Eligibility: active + can-receive + mutual allow + vehicle/booking type
+ *      match + pickup within partner's serviceRadiusKm of centroid.
+ *   2. Score = fee * fee_weight + distanceKm * distance_weight. Closer and
+ *      cheaper wins. Distance is weighted at 5p-per-km so a partner 2km
+ *      closer is preferred over one 10p cheaper.
+ *   3. Waterfall: try top candidate. On adapter failure, fall through to the
+ *      next. Up to MAX_WATERFALL attempts. Every attempt recorded on
+ *      transit.routingTrace.
+ *
+ * Idempotent on (originatorId, originatorBookingExternalId).
  */
+
+const EARTH_RADIUS_KM = 6371;
+const FEE_PER_PENCE_WEIGHT = 1;
+const DISTANCE_KM_WEIGHT = 5;
+const MAX_WATERFALL = 5;
+
 export async function routeBooking(args: {
   originatorPartnerId: string;
   booking: NormalisedBooking;
 }): Promise<{ transitId: string; outcome: "pushed" | "no_match" | "paused" | "error" }> {
   const { originatorPartnerId, booking } = args;
 
-  // 1. Network-wide kill switch check
   const [control] = await db.select().from(networkControls).where(eq(networkControls.id, "global"));
   if (control?.killSwitch || process.env.NETWORK_KILL_SWITCH === "true") {
     const t = await insertTransit(originatorPartnerId, booking, "paused", { reason: "kill_switch" });
     return { transitId: t.id, outcome: "paused" };
   }
 
-  // 2. Idempotency: insert-or-fetch transit
   const transit = await insertTransit(originatorPartnerId, booking, "routing", null);
 
-  // 3. Find eligible recipients
-  const eligible = await findEligibleRecipients(originatorPartnerId, booking);
-  if (eligible.length === 0) {
+  const candidates = await rankCandidates(originatorPartnerId, booking);
+  if (candidates.length === 0) {
     await markTransit(transit.id, "no_match", { reason: "no_eligible_partner" });
     return { transitId: transit.id, outcome: "no_match" };
   }
 
-  // 4. Pick recipient (MVP: lowest receive_fee. Future: scoring, traffic light, priority list.)
-  const candidates = await Promise.all(
-    eligible.map(async (recipientId) => {
-      const fee = await resolveFeeSnapshot(originatorPartnerId, recipientId, booking);
-      return { recipientId, fee };
-    }),
-  );
-  candidates.sort((a, b) => a.fee.receiveFeePence - b.fee.receiveFeePence);
-  const winner = candidates[0];
+  // Waterfall
+  const attempts: Array<{
+    recipientId: string;
+    rank: number;
+    score: number;
+    distanceKm: number | null;
+    receiveFeePence: number;
+    outcome: "pushed" | "error_other" | "error_auth";
+    error?: string;
+  }> = [];
 
-  // 5. Push to recipient via their adapter
-  try {
-    const adapter = await getAdapterForPartner(winner.recipientId);
-    const result = await adapter.createBooking({
-      transitId: transit.id,
-      recipientPartnerId: winner.recipientId,
-      booking,
-      feeSnapshot: winner.fee,
-    });
+  let winnerRecipientId: string | null = null;
+  let winnerFeeSnapshot: FeeSnapshot | null = null;
+  let winnerExternalId: string | null = null;
 
-    await db
-      .update(transits)
-      .set({
-        recipientPartnerId: winner.recipientId,
-        recipientBookingExternalId: result.externalId,
-        feeSnapshot: winner.fee,
-        routingTrace: {
-          consideredCount: candidates.length,
-          winner: winner.recipientId,
-          ranking: candidates.map((c) => ({ id: c.recipientId, receiveFeePence: c.fee.receiveFeePence })),
-        },
-        status: "pushed",
-        updatedAt: new Date(),
-      })
-      .where(eq(transits.id, transit.id));
+  for (let i = 0; i < Math.min(MAX_WATERFALL, candidates.length); i++) {
+    const c = candidates[i];
+    try {
+      const adapter = await getAdapterForPartner(c.recipientId);
+      const result = await adapter.createBooking({
+        transitId: transit.id,
+        recipientPartnerId: c.recipientId,
+        booking,
+        feeSnapshot: c.fee,
+      });
+      attempts.push({
+        recipientId: c.recipientId,
+        rank: i,
+        score: c.score,
+        distanceKm: c.distanceKm,
+        receiveFeePence: c.fee.receiveFeePence,
+        outcome: "pushed",
+      });
+      winnerRecipientId = c.recipientId;
+      winnerFeeSnapshot = c.fee;
+      winnerExternalId = result.externalId;
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      attempts.push({
+        recipientId: c.recipientId,
+        rank: i,
+        score: c.score,
+        distanceKm: c.distanceKm,
+        receiveFeePence: c.fee.receiveFeePence,
+        outcome: /401|403|auth/i.test(msg) ? "error_auth" : "error_other",
+        error: msg.slice(0, 200),
+      });
+      // continue to next candidate
+    }
+  }
 
+  const routingTrace = {
+    consideredCount: candidates.length,
+    waterfallAttempts: attempts,
+    winner: winnerRecipientId,
+    pickupLat: booking.pickup.lat,
+    pickupLng: booking.pickup.lng,
+  };
+
+  if (!winnerRecipientId || !winnerFeeSnapshot) {
+    await db.update(transits).set({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      status: "error_other" as any,
+      routingTrace,
+      updatedAt: new Date(),
+    }).where(eq(transits.id, transit.id));
     await db.insert(transitEvents).values({
       transitId: transit.id,
-      status: "pushed",
-      detail: { recipientBookingExternalId: result.externalId },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      status: "error_other" as any,
+      detail: { reason: "all_candidates_failed", attempts: attempts.length },
       actor: "system",
     });
-
-    return { transitId: transit.id, outcome: "pushed" };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await markTransit(transit.id, "error_other", { error: msg });
     return { transitId: transit.id, outcome: "error" };
   }
+
+  await db.update(transits).set({
+    recipientPartnerId: winnerRecipientId,
+    recipientBookingExternalId: winnerExternalId,
+    feeSnapshot: winnerFeeSnapshot,
+    routingTrace,
+    status: "pushed",
+    updatedAt: new Date(),
+  }).where(eq(transits.id, transit.id));
+
+  await db.insert(transitEvents).values({
+    transitId: transit.id,
+    status: "pushed",
+    detail: {
+      recipientBookingExternalId: winnerExternalId,
+      waterfallAttempts: attempts.length,
+    },
+    actor: "system",
+  });
+
+  return { transitId: transit.id, outcome: "pushed" };
 }
+
+// ---------------------------------------------------------------------------
+// Candidate ranking
+// ---------------------------------------------------------------------------
+
+type RankedCandidate = {
+  recipientId: string;
+  fee: FeeSnapshot;
+  distanceKm: number | null;
+  score: number; // lower = better
+};
+
+async function rankCandidates(
+  originatorPartnerId: string,
+  booking: NormalisedBooking,
+): Promise<RankedCandidate[]> {
+  const eligible = await findEligibleRecipients(originatorPartnerId, booking);
+  if (eligible.length === 0) return [];
+
+  const ranked: RankedCandidate[] = await Promise.all(
+    eligible.map(async (p) => {
+      const fee = await resolveFeeSnapshot(originatorPartnerId, p.id, booking);
+      const distanceKm =
+        p.centroidLat !== null && p.centroidLng !== null
+          ? haversineKm(booking.pickup.lat, booking.pickup.lng, p.centroidLat, p.centroidLng)
+          : null;
+      // Partners without geo set get a neutral 25km — fee dominates for them.
+      const effectiveDistance = distanceKm ?? 25;
+      const score =
+        fee.receiveFeePence * FEE_PER_PENCE_WEIGHT + effectiveDistance * DISTANCE_KM_WEIGHT;
+      return { recipientId: p.id, fee, distanceKm, score };
+    }),
+  );
+
+  ranked.sort((a, b) => a.score - b.score);
+  return ranked;
+}
+
+type EligiblePartner = {
+  id: string;
+  centroidLat: number | null;
+  centroidLng: number | null;
+  serviceRadiusKm: number | null;
+};
+
+async function findEligibleRecipients(
+  originatorPartnerId: string,
+  booking: NormalisedBooking,
+): Promise<EligiblePartner[]> {
+  const possible = await db
+    .select()
+    .from(partners)
+    .where(
+      and(
+        eq(partners.status, "active"),
+        or(
+          eq(partners.participationMode, "receive_only"),
+          eq(partners.participationMode, "send_and_receive"),
+        ),
+      ),
+    );
+
+  const candidateIds = possible.filter((p) => p.id !== originatorPartnerId).map((p) => p.id);
+  if (candidateIds.length === 0) return [];
+
+  const outRules = await db
+    .select()
+    .from(partnerRules)
+    .where(
+      and(
+        eq(partnerRules.originatorId, originatorPartnerId),
+        inArray(partnerRules.recipientId, candidateIds),
+      ),
+    );
+  const outAllowed = new Set(outRules.filter((r) => r.rule === "allow").map((r) => r.recipientId));
+
+  const inRules = await db
+    .select()
+    .from(partnerRules)
+    .where(
+      and(
+        eq(partnerRules.recipientId, originatorPartnerId),
+        inArray(partnerRules.originatorId, candidateIds),
+      ),
+    );
+  const inAllowed = new Set(inRules.filter((r) => r.rule === "allow").map((r) => r.originatorId));
+
+  return possible
+    .filter((p) => p.id !== originatorPartnerId)
+    .filter((p) => outAllowed.has(p.id) && inAllowed.has(p.id))
+    .filter((p) => p.bookingTypes.includes(booking.bookingType))
+    .filter((p) => p.vehicleTypes.length === 0 || p.vehicleTypes.includes(booking.vehicleType))
+    .filter((p) => isWithinServiceArea(p, booking))
+    .map((p) => ({
+      id: p.id,
+      centroidLat: p.centroidLat,
+      centroidLng: p.centroidLng,
+      serviceRadiusKm: p.serviceRadiusKm,
+    }));
+}
+
+/** Partners without geo data are treated as covering everywhere (back-compat). */
+function isWithinServiceArea(
+  p: { centroidLat: number | null; centroidLng: number | null; serviceRadiusKm: number | null },
+  booking: NormalisedBooking,
+): boolean {
+  if (p.centroidLat === null || p.centroidLng === null || p.serviceRadiusKm === null) return true;
+  const distance = haversineKm(booking.pickup.lat, booking.pickup.lng, p.centroidLat, p.centroidLng);
+  return distance <= p.serviceRadiusKm;
+}
+
+/** Great-circle distance in km between two lat/lng pairs. */
+export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ---------------------------------------------------------------------------
+// Storage helpers
+// ---------------------------------------------------------------------------
 
 async function insertTransit(
   originatorPartnerId: string,
@@ -99,7 +283,6 @@ async function insertTransit(
   status: "routing" | "paused",
   detail: Record<string, unknown> | null,
 ) {
-  // Upsert by (originator, externalId) — idempotent inbound webhooks
   const existing = await db
     .select()
     .from(transits)
@@ -132,79 +315,19 @@ async function insertTransit(
   return row;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function markTransit(transitId: string, status: any, detail: Record<string, unknown>) {
   await db.update(transits).set({ status, updatedAt: new Date() }).where(eq(transits.id, transitId));
   await db.insert(transitEvents).values({ transitId, status, detail, actor: "system" });
 }
 
-/**
- * Eligibility:
- *  - partner.status = "active"
- *  - participationMode in ("receive_only", "send_and_receive")
- *  - mutual allow rule: (originator, recipient, allow) AND (recipient, originator, allow)
- *  - vehicleType matches (if recipient enforces a list)
- *  - bookingType matches recipient's accepted types
- *  - (zone matching deliberately stubbed in MVP — TODO when we have proper geo)
- */
-async function findEligibleRecipients(
-  originatorPartnerId: string,
-  booking: NormalisedBooking,
-): Promise<string[]> {
-  // All active partners that can receive
-  const possible = await db
-    .select()
-    .from(partners)
-    .where(
-      and(
-        eq(partners.status, "active"),
-        or(
-          eq(partners.participationMode, "receive_only"),
-          eq(partners.participationMode, "send_and_receive"),
-        ),
-      ),
-    );
+// ---------------------------------------------------------------------------
+// Status update + kill switch
+// ---------------------------------------------------------------------------
 
-  const candidateIds = possible.filter((p) => p.id !== originatorPartnerId).map((p) => p.id);
-  if (candidateIds.length === 0) return [];
-
-  // Rules: originator -> candidate must be allow
-  const outRules = await db
-    .select()
-    .from(partnerRules)
-    .where(
-      and(
-        eq(partnerRules.originatorId, originatorPartnerId),
-        inArray(partnerRules.recipientId, candidateIds),
-      ),
-    );
-  const outAllowed = new Set(outRules.filter((r) => r.rule === "allow").map((r) => r.recipientId));
-
-  // Rules: candidate -> originator must also be allow (mutual)
-  const inRules = await db
-    .select()
-    .from(partnerRules)
-    .where(
-      and(
-        eq(partnerRules.recipientId, originatorPartnerId),
-        inArray(partnerRules.originatorId, candidateIds),
-      ),
-    );
-  const inAllowed = new Set(inRules.filter((r) => r.rule === "allow").map((r) => r.originatorId));
-
-  return possible
-    .filter((p) => p.id !== originatorPartnerId)
-    .filter((p) => outAllowed.has(p.id) && inAllowed.has(p.id))
-    .filter((p) => p.bookingTypes.includes(booking.bookingType))
-    .filter((p) => p.vehicleTypes.length === 0 || p.vehicleTypes.includes(booking.vehicleType))
-    .map((p) => p.id);
-}
-
-/**
- * Forward a status update from the recipient back to the originator. Used by
- * the /api/webhooks/status route handler.
- */
 export async function forwardStatusUpdate(args: {
   transitId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   newStatus: any;
   detail?: Record<string, unknown>;
 }) {
@@ -217,8 +340,6 @@ export async function forwardStatusUpdate(args: {
     actor: "partner_webhook",
   });
 
-  // Forward to originator. In a real adapter this would POST to the originator's
-  // status-update webhook URL. The mock just logs.
   const [t] = await db.select().from(transits).where(eq(transits.id, transitId));
   if (t) {
     console.log(
@@ -228,9 +349,6 @@ export async function forwardStatusUpdate(args: {
   }
 }
 
-/**
- * Network-wide kill switch toggle.
- */
 export async function setKillSwitch(on: boolean, reason: string, actor: string) {
   const [existing] = await db.select().from(networkControls).where(eq(networkControls.id, "global"));
   const before = existing ?? null;

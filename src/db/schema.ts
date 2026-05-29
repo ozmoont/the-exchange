@@ -4,6 +4,7 @@ import {
   text,
   timestamp,
   integer,
+  real,
   jsonb,
   boolean,
   pgEnum,
@@ -77,6 +78,13 @@ export const partners = pgTable("partners", {
   serviceZones: jsonb("service_zones").$type<string[]>().notNull().default([]),
   vehicleTypes: jsonb("vehicle_types").$type<string[]>().notNull().default([]),
   bookingTypes: jsonb("booking_types").$type<("asap" | "prebook")[]>().notNull().default(["asap"]),
+  // Geographic coverage — used by the routing engine to filter candidates
+  // by distance from pickup. centroidLat/Lng = the partner's typical
+  // "centre of operations" (depot or city centre); serviceRadiusKm = how
+  // far they'll send drivers. Null = no geo restriction (legacy partners).
+  centroidLat: real("centroid_lat"),
+  centroidLng: real("centroid_lng"),
+  serviceRadiusKm: integer("service_radius_km"),
   // credentials for outbound calls (encrypted JSON blob; shape depends on adapter)
   credentials: jsonb("credentials").$type<Record<string, unknown>>(),
   // partner-specific adapter id — must match a registered adapter key

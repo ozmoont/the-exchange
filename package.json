@@ -14,7 +14,9 @@
     "db:studio": "drizzle-kit studio",
     "seed": "tsx --env-file=.env.local src/scripts/seed.ts",
     "smoke": "tsx --env-file=.env.local src/scripts/smoke-test.ts",
-    "send-webhook": "tsx --env-file=.env.local src/scripts/send-webhook.ts"
+    "send-webhook": "tsx --env-file=.env.local src/scripts/send-webhook.ts",
+    "spawn-fleets": "tsx --env-file=.env.local src/scripts/spawn-fleets.ts",
+    "fire-jobs": "tsx --env-file=.env.local src/scripts/fire-jobs.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.33.0",

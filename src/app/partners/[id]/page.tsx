@@ -8,6 +8,7 @@ import { routeBooking } from "@/lib/routing";
 import { InboundWebhookSimulator } from "@/components/inbound-webhook-simulator";
 import { requirePartnerAccess } from "@/lib/auth";
 import { LiveRefresh } from "@/components/live-refresh";
+import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -30,12 +31,12 @@ async function sendTestBookingAction(formData: FormData) {
   const fareRaw = String(formData.get("farePounds") ?? "").trim();
   const fareEstimatePence = fareRaw ? Math.round(Number(fareRaw) * 100) : undefined;
 
-  const pickupAddress = String(formData.get("pickupAddress") ?? "O'Connell St, Dublin");
-  const dropoffAddress = String(formData.get("dropoffAddress") ?? "Dublin Airport");
+  const pickupAddress = String(formData.get("pickupAddress") ?? "King's Cross, London");
+  const dropoffAddress = String(formData.get("dropoffAddress") ?? "Heathrow Terminal 5");
 
   // Default lat/lngs — in real life these come from the originator's quote
-  const pickup = { lat: 53.349, lng: -6.26, address: pickupAddress };
-  const dropoff = { lat: 53.421, lng: -6.27, address: dropoffAddress };
+  const pickup = { lat: 51.530, lng: -0.123, address: pickupAddress };
+  const dropoff = { lat: 51.470, lng: -0.454, address: dropoffAddress };
 
   const externalId = `TEST-${Date.now()}`;
   const scheduledFor = bookingType === "prebook" ? new Date(Date.now() + 3600_000).toISOString() : undefined;
@@ -86,12 +87,33 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
     .filter((r) => r.rule === "allow" && outAllowed.has(r.other.id))
     .map((r) => r.other);
 
-  const recent = await db
+  const sentJobs = await db
     .select()
     .from(transits)
-    .where(or(eq(transits.originatorPartnerId, partner.id), eq(transits.recipientPartnerId, partner.id)))
+    .where(eq(transits.originatorPartnerId, partner.id))
     .orderBy(desc(transits.createdAt))
     .limit(10);
+
+  const receivedJobs = await db
+    .select()
+    .from(transits)
+    .where(eq(transits.recipientPartnerId, partner.id))
+    .orderBy(desc(transits.createdAt))
+    .limit(10);
+
+  // Lifetime counts for the section headers
+  const [{ n: lifetimeSent } = { n: 0 }] = await db
+    .select({ n: count() })
+    .from(transits)
+    .where(eq(transits.originatorPartnerId, partner.id));
+  const [{ n: lifetimeReceived } = { n: 0 }] = await db
+    .select({ n: count() })
+    .from(transits)
+    .where(eq(transits.recipientPartnerId, partner.id));
+  const [{ n: lifetimeCompleted } = { n: 0 }] = await db
+    .select({ n: count() })
+    .from(transits)
+    .where(and(eq(transits.recipientPartnerId, partner.id), eq(transits.status, "completed")));
 
   // Partner health metrics — recomputed on every render. With LiveRefresh
   // ticking the dashboard every 10s and demo mode advancing transits every
@@ -137,7 +159,7 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
         <MetricCard
           label="In flight"
           value={metrics.inFlight}
-          subtitle={metrics.inFlight === 0 ? "no active transits" : metrics.inFlight === 1 ? "transit currently routing" : "transits currently routing"}
+          subtitle={metrics.inFlight === 0 ? "no active bookings" : metrics.inFlight === 1 ? "booking currently in flight" : "bookings currently in flight"}
         />
         <MetricCard
           label="Completed (24h)"
@@ -148,7 +170,7 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
         <MetricCard
           label="Success rate (24h)"
           value={metrics.successRate === null ? "—" : `${metrics.successRate}%`}
-          subtitle={metrics.total24h === 0 ? "no transits in last 24h" : `of ${metrics.total24h} total transits`}
+          subtitle={metrics.total24h === 0 ? "no bookings in last 24h" : `of ${metrics.total24h} total bookings`}
           tone={metrics.successRate !== null && metrics.successRate < 80 ? "danger" : "success"}
         />
         <MetricCard
@@ -244,10 +266,10 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
               </div>
 
               <Field label="Pickup address">
-                <input name="pickupAddress" defaultValue="O'Connell St, Dublin" className="input" />
+                <input name="pickupAddress" defaultValue="King's Cross, London" className="input" />
               </Field>
               <Field label="Dropoff address">
-                <input name="dropoffAddress" defaultValue="Dublin Airport" className="input" />
+                <input name="dropoffAddress" defaultValue="Heathrow Terminal 5" className="input" />
               </Field>
               <Field label="Fare estimate (£)" hint="Optional. If set, percentage-based trip fees use this as the base.">
                 <input name="farePounds" type="number" step="0.5" placeholder="25.00" className="input" />
@@ -264,47 +286,91 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
       {/* Inbound webhook simulator (external partners + editors only) */}
       {canEdit && <InboundWebhookSimulator partner={partner} />}
 
-      {/* Recent transits */}
-      <div className="card overflow-hidden">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h2 className="font-semibold">Recent transits</h2>
-          <Link href="/bookings" className="text-xs text-ink-muted hover:text-ink">View all →</Link>
-        </div>
-        {recent.length === 0 ? (
-          <p className="px-5 py-8 text-center text-sm text-ink-muted">No transits yet.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wide text-ink-subtle">
-              <tr>
-                <th className="text-left px-5 py-3 font-semibold">When</th>
-                <th className="text-left px-5 py-3 font-semibold">Role</th>
-                <th className="text-left px-5 py-3 font-semibold">Ext. ID</th>
-                <th className="text-left px-5 py-3 font-semibold">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {recent.map((t) => (
-                <tr key={t.id} className="hover:bg-surface-muted">
-                  <td className="px-5 py-3 whitespace-nowrap">
-                    <div>{new Date(t.createdAt).toLocaleString()}</div>
-                  </td>
-                  <td className="px-5 py-3 text-ink-muted text-xs">
-                    {t.originatorPartnerId === partner.id ? "originator" : "recipient"}
-                  </td>
-                  <td className="px-5 py-3">
-                    <Link href={`/transits/${t.id}`} className="hover:underline">
-                      <code className="text-xs">{t.originatorBookingExternalId}</code>
-                    </Link>
-                  </td>
-                  <td className="px-5 py-3">
-                    <TransitStatusBadge status={t.status} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {/* Jobs sent + received */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <JobsTable
+          title="Jobs sent"
+          subtitle={`${Number(lifetimeSent)} sent to other fleets all-time`}
+          partnerId={partner.id}
+          rows={sentJobs}
+          role="originator"
+        />
+        <JobsTable
+          title="Jobs received"
+          subtitle={`${Number(lifetimeReceived)} received · ${Number(lifetimeCompleted)} completed`}
+          partnerId={partner.id}
+          rows={receivedJobs}
+          role="recipient"
+        />
       </div>
+    </div>
+  );
+}
+
+function JobsTable({
+  title,
+  subtitle,
+  partnerId,
+  rows,
+  role,
+}: {
+  title: string;
+  subtitle: string;
+  partnerId: string;
+  rows: { id: string; originatorBookingExternalId: string; status: string; createdAt: Date; originatorPartnerId: string; recipientPartnerId: string | null }[];
+  role: "originator" | "recipient";
+}) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-5 py-3 border-b border-border">
+        <div className="flex items-baseline justify-between gap-3">
+          <h2 className="font-semibold">{title}</h2>
+          <Link
+            href={`/bookings`}
+            className="text-xs text-ink-muted hover:text-ink"
+            // Filtering by partner from the bookings page isn't implemented yet
+            // but listing partner-scoped bookings is — fleet_users see their
+            // own automatically; super_admins see all and can spot this fleet.
+          >
+            View in Bookings →
+          </Link>
+        </div>
+        <p className="text-xs text-ink-subtle mt-1">{subtitle}</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-ink-muted">
+          No {role === "originator" ? "jobs sent" : "jobs received"} yet.
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="text-xs uppercase tracking-wide text-ink-subtle">
+            <tr>
+              <th className="text-left px-5 py-3 font-semibold">When</th>
+              <th className="text-left px-5 py-3 font-semibold">Ext. ID</th>
+              <th className="text-left px-5 py-3 font-semibold">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rows.map((t) => (
+              <tr key={t.id} className="hover:bg-surface-muted">
+                <td className="px-5 py-3 whitespace-nowrap text-xs text-ink-muted">
+                  {new Date(t.createdAt).toLocaleString()}
+                </td>
+                <td className="px-5 py-3">
+                  <Link href={`/transits/${t.id}`} className="hover:underline">
+                    <code className="text-xs">{t.originatorBookingExternalId}</code>
+                  </Link>
+                </td>
+                <td className="px-5 py-3">
+                  <TransitStatusBadge status={t.status} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {/* suppress unused */}
+      <span className="hidden">{partnerId}</span>
     </div>
   );
 }
@@ -361,17 +427,12 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function TransitStatusBadge({ status }: { status: string }) {
-  const cls =
-    status === "completed"
-      ? "badge-success"
-      : status === "cancelled" || status === "failed" || status === "no_match" || status.startsWith("error_")
-      ? "badge-danger"
-      : status === "paused"
-      ? "badge-warning"
-      : ["pushed", "accepted", "driver_assigned", "en_route", "on_board"].includes(status)
-      ? "badge-info"
-      : "badge-neutral";
-  return <span className={cls}>{status.replace(/_/g, " ")}</span>;
+  const meta = statusMeta(status);
+  return (
+    <span className={statusBadgeClass(status)} title={meta.description}>
+      {statusLabel(status)}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +484,8 @@ async function computePartnerMetrics(partnerId: string): Promise<PartnerMetrics>
   const [{ n: inFlightN } = { n: 0 }] = await db
     .select({ n: count() })
     .from(transits)
-    .where(and(involvedExpr, inArray(transits.status, IN_FLIGHT_STATUSES as unknown as string[])));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .where(and(involvedExpr, inArray(transits.status as any, [...IN_FLIGHT_STATUSES])));
   const inFlight = Number(inFlightN);
 
   // Last activity = max(updated_at) on any transit involving this partner

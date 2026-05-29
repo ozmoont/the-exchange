@@ -64,7 +64,8 @@ async function tickOnce(): Promise<void> {
   const inFlight = await db
     .select()
     .from(transits)
-    .where(inArray(transits.status, IN_FLIGHT as unknown as string[]))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .where(inArray(transits.status as any, [...IN_FLIGHT]))
     .limit(20);
 
   if (inFlight.length > 0) {

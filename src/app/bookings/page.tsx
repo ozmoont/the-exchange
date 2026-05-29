@@ -1,20 +1,40 @@
 import { db } from "@/db/client";
 import { transits, partners } from "@/db/schema";
-import { desc, eq, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import Link from "next/link";
 import { LiveRefresh } from "@/components/live-refresh";
+import {
+  STATUSES_BY_GROUP,
+  GROUP_LABEL,
+  statusBadgeClass,
+  statusLabel,
+  statusMeta,
+  type StatusGroup,
+} from "@/lib/status-labels";
 
 export const dynamic = "force-dynamic";
+
+const GROUPS: StatusGroup[] = ["in_flight", "completed", "no_match", "error", "paused", "cancelled"];
 
 export default async function BookingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ highlight?: string; outcome?: string }>;
+  searchParams: Promise<{ highlight?: string; outcome?: string; status?: string; group?: string }>;
 }) {
   const user = await requireUser();
   const sp = await searchParams;
   const isSuper = user.role === "super_admin";
+
+  // Filter: single status takes precedence, otherwise group
+  const filterStatus = sp.status?.trim();
+  const filterGroup = sp.group?.trim() as StatusGroup | undefined;
+  const filterStatuses =
+    filterStatus
+      ? [filterStatus]
+      : filterGroup && STATUSES_BY_GROUP[filterGroup]
+      ? STATUSES_BY_GROUP[filterGroup]
+      : null;
 
   const scopedWhere = isSuper
     ? undefined
@@ -25,16 +45,38 @@ export default async function BookingsPage({
       )
     : eq(transits.id, "00000000-0000-0000-0000-000000000000");
 
+  const statusWhere = filterStatuses
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ? inArray(transits.status as any, filterStatuses)
+    : undefined;
+
+  const whereClause =
+    scopedWhere && statusWhere ? and(scopedWhere, statusWhere) : scopedWhere ?? statusWhere;
+
   const rows = await db
     .select({ t: transits, originator: partners })
     .from(transits)
     .leftJoin(partners, eq(transits.originatorPartnerId, partners.id))
-    .where(scopedWhere)
+    .where(whereClause)
     .orderBy(desc(transits.createdAt))
     .limit(200);
 
+  const recipientIds = Array.from(
+    new Set(rows.map((r) => r.t.recipientPartnerId).filter((id): id is string => !!id)),
+  );
+  const recipients = recipientIds.length
+    ? await db.select().from(partners).where(inArray(partners.id, recipientIds))
+    : [];
+  const recipientById = new Map(recipients.map((r) => [r.id, r]));
+
   const highlight = sp.highlight ?? null;
   const outcome = sp.outcome ?? null;
+
+  const filterLabel = filterStatus
+    ? statusLabel(filterStatus)
+    : filterGroup
+    ? GROUP_LABEL[filterGroup]
+    : null;
 
   return (
     <div className="space-y-6">
@@ -43,12 +85,43 @@ export default async function BookingsPage({
         <p className="text-xs uppercase tracking-[0.2em] text-ink-muted font-semibold">
           {isSuper ? "Network activity" : "Your bookings"}
         </p>
-        <h1 className="text-3xl font-bold tracking-tight mt-1">Transits</h1>
+        <h1 className="text-3xl font-bold tracking-tight mt-1">Bookings</h1>
         <p className="text-sm text-ink-muted mt-2 max-w-2xl">
-          Every booking that has moved (or tried to move) through the network. Each row is one
-          transit keyed by (originator, originator&apos;s booking id) — duplicate webhook
-          deliveries collapse here.
+          Every booking that has moved (or tried to move) through the network. Each row is keyed
+          by (originator, originator&apos;s booking id) — duplicate webhook deliveries collapse here.
         </p>
+      </div>
+
+      {/* Status filter chips */}
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <Link
+          href="/bookings"
+          className={`px-3 py-1.5 rounded-full border ${
+            !filterStatus && !filterGroup
+              ? "bg-ink text-surface border-ink"
+              : "border-border hover:bg-surface-muted"
+          }`}
+        >
+          All
+        </Link>
+        {GROUPS.map((g) => (
+          <Link
+            key={g}
+            href={`/bookings?group=${g}`}
+            className={`px-3 py-1.5 rounded-full border ${
+              filterGroup === g
+                ? "bg-ink text-surface border-ink"
+                : "border-border hover:bg-surface-muted"
+            }`}
+          >
+            {GROUP_LABEL[g]}
+          </Link>
+        ))}
+        {filterStatus && (
+          <span className="px-3 py-1.5 rounded-full bg-ink text-surface border border-ink">
+            {filterLabel}
+          </span>
+        )}
       </div>
 
       {outcome && (
@@ -63,10 +136,10 @@ export default async function BookingsPage({
               : "bg-danger text-danger-fg"
           }`}
         >
-          Test booking outcome: <strong>{outcome}</strong>
+          Test booking outcome: <strong>{statusLabel(outcome)}</strong>
           {highlight && (
             <span className="opacity-70 ml-2">
-              · transit <code className="text-xs">{highlight.slice(0, 8)}…</code> highlighted below
+              · booking <code className="text-xs">{highlight.slice(0, 8)}…</code> highlighted below
             </span>
           )}
         </div>
@@ -75,7 +148,9 @@ export default async function BookingsPage({
       <div className="card overflow-hidden">
         {rows.length === 0 ? (
           <p className="px-6 py-12 text-center text-sm text-ink-muted">
-            No transits yet — try sending a test booking from a partner detail page.
+            {filterLabel
+              ? <>No bookings with status <strong>{filterLabel}</strong> right now.</>
+              : "No bookings yet — try sending a test booking from a partner detail page."}
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -83,6 +158,7 @@ export default async function BookingsPage({
               <tr>
                 <th className="text-left px-5 py-3 font-semibold">When</th>
                 <th className="text-left px-5 py-3 font-semibold">Originator</th>
+                <th className="text-left px-5 py-3 font-semibold">Sent to fleet</th>
                 <th className="text-left px-5 py-3 font-semibold">External ID</th>
                 <th className="text-left px-5 py-3 font-semibold">Status</th>
                 <th className="text-left px-5 py-3 font-semibold">Fee snapshot</th>
@@ -92,6 +168,7 @@ export default async function BookingsPage({
               {rows.map(({ t, originator }) => {
                 const fs = t.feeSnapshot;
                 const isHighlighted = t.id === highlight;
+                const recipient = t.recipientPartnerId ? recipientById.get(t.recipientPartnerId) : null;
                 return (
                   <tr
                     key={t.id}
@@ -102,7 +179,22 @@ export default async function BookingsPage({
                       <div className="text-xs text-ink-subtle">{relativeTime(t.createdAt)}</div>
                     </td>
                     <td className="px-5 py-3 text-ink-muted">
-                      {originator?.name ?? <code className="text-xs">{t.originatorPartnerId.slice(0, 8)}…</code>}
+                      {originator?.id ? (
+                        <Link href={`/partners/${originator.id}`} className="hover:underline">
+                          {originator.name}
+                        </Link>
+                      ) : (
+                        <code className="text-xs">{t.originatorPartnerId.slice(0, 8)}…</code>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-ink-muted">
+                      {recipient?.id ? (
+                        <Link href={`/partners/${recipient.id}`} className="hover:underline">
+                          {recipient.name}
+                        </Link>
+                      ) : (
+                        <span className="text-xs text-ink-subtle">—</span>
+                      )}
                     </td>
                     <td className="px-5 py-3">
                       <Link href={`/transits/${t.id}`} className="hover:underline">
@@ -129,17 +221,12 @@ export default async function BookingsPage({
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === "completed"
-      ? "badge-success"
-      : status === "cancelled" || status === "failed" || status === "no_match" || status.startsWith("error_")
-      ? "badge-danger"
-      : status === "paused"
-      ? "badge-warning"
-      : ["pushed", "accepted", "driver_assigned", "en_route", "on_board"].includes(status)
-      ? "badge-info"
-      : "badge-neutral";
-  return <span className={cls}>{status.replace(/_/g, " ")}</span>;
+  const meta = statusMeta(status);
+  return (
+    <span className={statusBadgeClass(status)} title={meta.description}>
+      {meta.label}
+    </span>
+  );
 }
 
 function relativeTime(d: Date | string) {

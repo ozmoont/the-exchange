@@ -6,6 +6,7 @@ import { setKillSwitch } from "@/lib/routing";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
 import { LiveRefresh } from "@/components/live-refresh";
+import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 
 export const dynamic = "force-dynamic";
 
@@ -263,10 +264,10 @@ async function Dashboard({
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label={isSuperAdmin ? "Active partners" : "Connections"} value={partnerCount} />
-        <StatCard label="Pushed" value={pushedToday} tone="info" />
-        <StatCard label="Completed" value={completed} tone="success" />
-        <StatCard label="Failed / no match" value={failed} tone={failed > 0 ? "danger" : "neutral"} />
+        <StatCardLink label={isSuperAdmin ? "Active partners" : "Connections"} value={partnerCount} href="/partners" />
+        <StatCardLink label="Sent to fleet" value={pushedToday} tone="info" href="/bookings?status=pushed" />
+        <StatCardLink label="Completed" value={completed} tone="success" href="/bookings?group=completed" />
+        <StatCardLink label="Failed / no match" value={failed} tone={failed > 0 ? "danger" : "neutral"} href="/bookings?group=no_match" />
       </div>
 
       {isSuperAdmin && (
@@ -281,7 +282,7 @@ async function Dashboard({
               </div>
               <p className="text-sm text-ink-muted mt-1 max-w-2xl">
                 When engaged, every new booking is held at <code>paused</code> status. In-flight
-                transits continue receiving status updates so nothing strands.
+                bookings continue receiving status updates so nothing strands.
               </p>
             </div>
             <form action={toggleKill}>
@@ -301,7 +302,7 @@ async function Dashboard({
           </div>
           {recentTransits.length === 0 ? (
             <p className="px-5 py-8 text-center text-sm text-ink-muted">
-              No transits in the last 24h.
+              No bookings in the last 24h.
             </p>
           ) : (
             <ul className="divide-y divide-border">
@@ -312,7 +313,7 @@ async function Dashboard({
                   </Link>
                   <div className="flex items-center gap-3 text-xs">
                     <span className="text-ink-muted">{new Date(t.createdAt).toLocaleTimeString()}</span>
-                    <span className={statusTone(t.status)}>{t.status.replace(/_/g, " ")}</span>
+                    <span className={statusBadgeClass(t.status)} title={statusMeta(t.status).description}>{statusLabel(t.status)}</span>
                   </div>
                 </li>
               ))}
@@ -350,14 +351,16 @@ async function Dashboard({
   );
 }
 
-function StatCard({
+function StatCardLink({
   label,
   value,
   tone,
+  href,
 }: {
   label: string;
   value: number;
   tone?: "info" | "success" | "danger" | "neutral";
+  href: string;
 }) {
   const bg =
     tone === "success"
@@ -368,19 +371,11 @@ function StatCard({
       ? "bg-danger/40"
       : "";
   return (
-    <div className={`stat ${bg}`}>
+    <Link href={href} className={`stat hover:ring-2 hover:ring-ink/10 transition-shadow ${bg}`}>
       <div className="stat-label">{label}</div>
       <div className="stat-value">{value.toLocaleString()}</div>
-    </div>
+    </Link>
   );
-}
-
-function statusTone(status: string) {
-  if (status === "completed") return "badge-success";
-  if (status === "cancelled" || status === "failed" || status === "no_match" || status.startsWith("error_")) return "badge-danger";
-  if (status === "paused") return "badge-warning";
-  if (["pushed", "accepted", "driver_assigned", "en_route", "on_board"].includes(status)) return "badge-info";
-  return "badge-neutral";
 }
 
 function categoryTone(cat: string) {
