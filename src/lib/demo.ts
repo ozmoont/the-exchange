@@ -77,10 +77,17 @@ async function tickOnce(): Promise<void> {
       .set({ status: nextStatus as never, updatedAt: new Date() })
       .where(eq(transits.id, t.id));
 
+    // When the demo lifecycle reaches driver_assigned, attach a fake driver
+    // payload so the driver panel surfaces. Shape mirrors Karhoo DriverDetails.
+    const detail: Record<string, unknown> =
+      nextStatus === "driver_assigned"
+        ? { source: "demo_tick", ...sampleDriver() }
+        : { source: "demo_tick" };
+
     await db.insert(transitEvents).values({
       transitId: t.id,
       status: nextStatus as never,
-      detail: { source: "demo_tick" },
+      detail,
       actor: "system",
     });
     return;
@@ -171,4 +178,63 @@ const DROPOFFS = [
 
 function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Sample driver+vehicle data mirroring Karhoo's DriverDetails webhook payload.
+ * Used when the demo tick advances a transit to `driver_assigned`, so the
+ * Driver panel on the transit detail page has something concrete to show.
+ */
+function sampleDriver() {
+  const samples = [
+    {
+      driver: { first_name: "Michael", last_name: "Higgins", phone_number: "+353 1 555 0099", license_number: "ZXZ151YTY" },
+      description: "Renault Scenic (Black)",
+      vehicle_class: "MPV",
+      vehicle_license_plate: "12-D-9999",
+      make: "Renault",
+      model: "Scenic",
+      colour: "BLACK",
+      passenger_capacity: 4,
+      luggage_capacity: 3,
+      tags: ["child-seat"],
+    },
+    {
+      driver: { first_name: "Aoife", last_name: "Murphy", phone_number: "+353 1 555 0123", license_number: "DR-0049" },
+      description: "Skoda Octavia (Silver)",
+      vehicle_class: "Saloon",
+      vehicle_license_plate: "22-D-4421",
+      make: "Skoda",
+      model: "Octavia",
+      colour: "SILVER",
+      passenger_capacity: 4,
+      luggage_capacity: 3,
+      tags: [],
+    },
+    {
+      driver: { first_name: "Diarmuid", last_name: "O'Brien", phone_number: "+353 1 555 0188", license_number: "RA-2200" },
+      description: "Mercedes E-Class (Black)",
+      vehicle_class: "Executive",
+      vehicle_license_plate: "23-D-0188",
+      make: "Mercedes-Benz",
+      model: "E-Class",
+      colour: "BLACK",
+      passenger_capacity: 4,
+      luggage_capacity: 2,
+      tags: ["electric", "premium"],
+    },
+    {
+      driver: { first_name: "Niamh", last_name: "Walsh", phone_number: "+353 1 555 0254", license_number: "WX-1102" },
+      description: "Toyota Prius (White)",
+      vehicle_class: "Saloon",
+      vehicle_license_plate: "24-D-1102",
+      make: "Toyota",
+      model: "Prius",
+      colour: "WHITE",
+      passenger_capacity: 4,
+      luggage_capacity: 2,
+      tags: ["hybrid"],
+    },
+  ];
+  return pickRandom(samples);
 }

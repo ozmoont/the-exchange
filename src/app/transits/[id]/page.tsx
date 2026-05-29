@@ -26,15 +26,70 @@ async function simulateStatusAction(formData: FormData) {
   const newStatus = String(formData.get("newStatus") ?? "");
   if (!transitId || !newStatus) return;
 
+  // When advancing to driver_assigned, attach realistic driver/vehicle data
+  // so the driver panel surfaces immediately. Mirrors the shape Karhoo
+  // sends in the DriverDetails webhook event.
+  const baseDetail: Record<string, unknown> = {
+    simulated: true,
+    via: "transit_detail_page",
+    at: new Date().toISOString(),
+  };
+  const detail =
+    newStatus === "driver_assigned"
+      ? { ...baseDetail, ...sampleDriverDetail() }
+      : baseDetail;
+
   await forwardStatusUpdate({
     transitId,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     newStatus: newStatus as any,
-    detail: { simulated: true, via: "transit_detail_page", at: new Date().toISOString() },
+    detail,
   });
 
   revalidatePath(`/transits/${transitId}`);
   revalidatePath("/bookings");
+}
+
+function sampleDriverDetail() {
+  const samples = [
+    {
+      driver: { first_name: "Michael", last_name: "Higgins", phone_number: "+353 1 555 0099", license_number: "ZXZ151YTY" },
+      description: "Renault Scenic (Black)",
+      vehicle_class: "MPV",
+      vehicle_license_plate: "12-D-9999",
+      make: "Renault",
+      model: "Scenic",
+      colour: "BLACK",
+      passenger_capacity: 4,
+      luggage_capacity: 3,
+      tags: ["child-seat"],
+    },
+    {
+      driver: { first_name: "Aoife", last_name: "Murphy", phone_number: "+353 1 555 0123", license_number: "DR-0049" },
+      description: "Skoda Octavia (Silver)",
+      vehicle_class: "Saloon",
+      vehicle_license_plate: "22-D-4421",
+      make: "Skoda",
+      model: "Octavia",
+      colour: "SILVER",
+      passenger_capacity: 4,
+      luggage_capacity: 3,
+      tags: [],
+    },
+    {
+      driver: { first_name: "Diarmuid", last_name: "O'Brien", phone_number: "+353 1 555 0188", license_number: "RA-2200" },
+      description: "Mercedes E-Class (Black)",
+      vehicle_class: "Executive",
+      vehicle_license_plate: "23-D-0188",
+      make: "Mercedes-Benz",
+      model: "E-Class",
+      colour: "BLACK",
+      passenger_capacity: 4,
+      luggage_capacity: 2,
+      tags: ["electric", "premium"],
+    },
+  ];
+  return samples[Math.floor(Math.random() * samples.length)];
 }
 
 export default async function TransitDetailPage({
@@ -81,6 +136,15 @@ export default async function TransitDetailPage({
 
   const booking = transit.bookingPayload as Record<string, unknown>;
   const fs = transit.feeSnapshot;
+
+  // Find the most recent event that carries driver/vehicle data. iCabbi's
+  // DriverDetails webhook event populates the transit_event.detail jsonb
+  // with the full driver + vehicle payload; we render it as a card.
+  const driverEvent = [...events].reverse().find((e) => {
+    const d = e.detail as Record<string, unknown> | null;
+    return d && d.driver && typeof d.driver === "object";
+  });
+  const driverDetail = driverEvent?.detail as DriverEventDetail | undefined;
 
   return (
     <div className="space-y-6">
@@ -136,6 +200,8 @@ export default async function TransitDetailPage({
           )}
         </Section>
       </div>
+
+      {driverDetail && <DriverPanel driver={driverDetail} />}
 
       {canSimulate && !isTerminal && transit.recipientPartnerId && (
         <section className="card bg-warning/60 border-yellow-400 p-5">
@@ -246,4 +312,104 @@ function StatusBadge({ status }: { status: string }) {
       ? "badge-info"
       : "badge-neutral";
   return <span className={cls}>{status.replace(/_/g, " ")}</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Driver panel
+// ---------------------------------------------------------------------------
+
+type DriverEventDetail = {
+  driver?: {
+    first_name?: string;
+    last_name?: string;
+    phone_number?: string;
+    photo_url?: string;
+    license_number?: string;
+  };
+  description?: string;
+  vehicle_class?: string;
+  vehicle_license_plate?: string;
+  make?: string;
+  model?: string;
+  colour?: string;
+  passenger_capacity?: number;
+  luggage_capacity?: number;
+  tags?: string[];
+};
+
+function DriverPanel({ driver }: { driver: DriverEventDetail }) {
+  const d = driver.driver ?? {};
+  const driverName = [d.first_name, d.last_name].filter(Boolean).join(" ") || "Unknown driver";
+  const vehicleParts = [driver.colour, driver.make, driver.model].filter(Boolean);
+  const vehicleLabel =
+    driver.description ?? (vehicleParts.length ? vehicleParts.join(" ") : driver.vehicle_class ?? "Vehicle");
+  const colourCapitalised = driver.colour ? driver.colour.charAt(0).toUpperCase() + driver.colour.slice(1).toLowerCase() : null;
+
+  return (
+    <section className="card p-5 bg-info/30 border-blue-200">
+      <div className="flex items-start gap-4">
+        {d.photo_url ? (
+          <img
+            src={d.photo_url}
+            alt={driverName}
+            className="h-14 w-14 rounded-full object-cover border-2 border-white shadow-card"
+          />
+        ) : (
+          <div className="h-14 w-14 rounded-full bg-info-fg/20 text-info-fg flex items-center justify-center font-bold text-lg">
+            {(d.first_name?.[0] ?? "?") + (d.last_name?.[0] ?? "")}
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className="text-xs uppercase tracking-wide text-info-fg/70 font-semibold">
+            Driver assigned
+          </div>
+          <div className="flex items-baseline gap-3 flex-wrap mt-1">
+            <h2 className="text-lg font-bold text-info-fg">{driverName}</h2>
+            {d.phone_number && (
+              <a href={`tel:${d.phone_number}`} className="text-sm text-info-fg hover:underline">
+                {d.phone_number}
+              </a>
+            )}
+          </div>
+
+          <div className="mt-2 text-sm text-info-fg/90">
+            {vehicleLabel}
+            {driver.vehicle_license_plate && (
+              <>
+                {" · "}
+                <code className="bg-white/60 px-1.5 py-0.5 rounded font-mono text-xs">
+                  {driver.vehicle_license_plate}
+                </code>
+              </>
+            )}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-info-fg/80">
+            {driver.vehicle_class && <span><strong>Class:</strong> {driver.vehicle_class}</span>}
+            {colourCapitalised && <span><strong>Colour:</strong> {colourCapitalised}</span>}
+            {typeof driver.passenger_capacity === "number" && (
+              <span><strong>Passengers:</strong> {driver.passenger_capacity}</span>
+            )}
+            {typeof driver.luggage_capacity === "number" && (
+              <span><strong>Luggage:</strong> {driver.luggage_capacity}</span>
+            )}
+            {d.license_number && (
+              <span><strong>Licence:</strong> <code className="font-mono">{d.license_number}</code></span>
+            )}
+          </div>
+
+          {driver.tags && driver.tags.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {driver.tags.map((t) => (
+                <span key={t} className="bg-white/70 text-info-fg px-2 py-0.5 rounded-full text-xs font-medium">
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
