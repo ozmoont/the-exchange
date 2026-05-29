@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { transits, partners } from "@/db/schema";
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import Link from "next/link";
 import { LiveRefresh } from "@/components/live-refresh";
@@ -16,6 +16,26 @@ import {
 export const dynamic = "force-dynamic";
 
 const GROUPS: StatusGroup[] = ["in_flight", "completed", "no_match", "error", "paused", "cancelled"];
+const TERMINAL = new Set(["completed", "cancelled", "failed", "no_match", "error_auth", "error_other"]);
+
+type BookingPayload = {
+  bookingType?: "asap" | "prebook";
+  scheduledFor?: string;
+  pickup?: { lat?: number; lng?: number; address?: string };
+  dropoff?: { lat?: number; lng?: number; address?: string };
+  passenger?: { name?: string; phone?: string };
+};
+
+type DriverDetail = {
+  driver?: {
+    first_name?: string;
+    last_name?: string;
+    phone_number?: string;
+    license_number?: string;
+  };
+  description?: string;
+  vehicle_class?: string;
+};
 
 export default async function BookingsPage({
   searchParams,
@@ -26,7 +46,6 @@ export default async function BookingsPage({
   const sp = await searchParams;
   const isSuper = user.role === "super_admin";
 
-  // Filter: single status takes precedence, otherwise group
   const filterStatus = sp.status?.trim();
   const filterGroup = sp.group?.trim() as StatusGroup | undefined;
   const filterStatuses =
@@ -61,13 +80,36 @@ export default async function BookingsPage({
     .orderBy(desc(transits.createdAt))
     .limit(200);
 
+  const transitIds = rows.map((r) => r.t.id);
   const recipientIds = Array.from(
     new Set(rows.map((r) => r.t.recipientPartnerId).filter((id): id is string => !!id)),
   );
+
+  // Recipient names
   const recipients = recipientIds.length
     ? await db.select().from(partners).where(inArray(partners.id, recipientIds))
     : [];
   const recipientById = new Map(recipients.map((r) => [r.id, r]));
+
+  // Pull the latest driver-bearing event per booking — one round trip via
+  // DISTINCT ON.
+  type DriverRow = { transitId: string; detail: DriverDetail; createdAt: Date };
+  const driverRows = transitIds.length
+    ? await db.execute<DriverRow>(sql`
+        SELECT DISTINCT ON (transit_id)
+          transit_id    AS "transitId",
+          detail        AS "detail",
+          created_at    AS "createdAt"
+        FROM transit_events
+        WHERE transit_id = ANY(${transitIds}::uuid[])
+          AND detail ? 'driver'
+        ORDER BY transit_id, created_at DESC
+      `)
+    : { rows: [] as DriverRow[] };
+  const driverByTransit = new Map<string, DriverDetail>();
+  for (const r of (driverRows as unknown as { rows: DriverRow[] }).rows ?? []) {
+    driverByTransit.set(r.transitId, r.detail);
+  }
 
   const highlight = sp.highlight ?? null;
   const outcome = sp.outcome ?? null;
@@ -154,60 +196,167 @@ export default async function BookingsPage({
           </p>
         ) : (
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wide text-ink-subtle">
+            <thead className="text-xs uppercase tracking-wide text-ink-subtle bg-surface-muted/40">
               <tr>
-                <th className="text-left px-5 py-3 font-semibold">When</th>
-                <th className="text-left px-5 py-3 font-semibold">Originator</th>
-                <th className="text-left px-5 py-3 font-semibold">Sent to fleet</th>
-                <th className="text-left px-5 py-3 font-semibold">External ID</th>
-                <th className="text-left px-5 py-3 font-semibold">Status</th>
-                <th className="text-left px-5 py-3 font-semibold">Fee snapshot</th>
+                <th className="text-left px-4 py-3 font-semibold w-[140px]">Booked</th>
+                <th className="text-left px-4 py-3 font-semibold w-[160px]">Pickup time</th>
+                <th className="text-left px-4 py-3 font-semibold">Route</th>
+                <th className="text-left px-4 py-3 font-semibold">Fleet & driver</th>
+                <th className="text-left px-4 py-3 font-semibold w-[140px]">Status</th>
+                <th className="text-right px-4 py-3 font-semibold w-[80px]">Fee</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {rows.map(({ t, originator }) => {
-                const fs = t.feeSnapshot;
                 const isHighlighted = t.id === highlight;
                 const recipient = t.recipientPartnerId ? recipientById.get(t.recipientPartnerId) : null;
+                const bp = (t.bookingPayload ?? {}) as BookingPayload;
+                const driver = driverByTransit.get(t.id);
+
+                const isPrebook = bp.bookingType === "prebook" && bp.scheduledFor;
+                const pickupTime = isPrebook ? new Date(bp.scheduledFor as string) : null;
+
+                const isTerminal = TERMINAL.has(t.status);
+                const durationMs =
+                  isTerminal && t.status === "completed"
+                    ? new Date(t.updatedAt).getTime() - new Date(t.createdAt).getTime()
+                    : null;
+
+                const driverName = driver?.driver
+                  ? [driver.driver.first_name, driver.driver.last_name].filter(Boolean).join(" ")
+                  : null;
+                const driverPhone = driver?.driver?.phone_number ?? null;
+
                 return (
                   <tr
                     key={t.id}
-                    className={isHighlighted ? "bg-warning/50" : "hover:bg-surface-muted"}
+                    className={isHighlighted ? "bg-warning/50" : "hover:bg-surface-muted/50"}
                   >
-                    <td className="px-5 py-3 whitespace-nowrap">
-                      <div>{new Date(t.createdAt).toLocaleString()}</div>
-                      <div className="text-xs text-ink-subtle">{relativeTime(t.createdAt)}</div>
+                    {/* Booked at */}
+                    <td className="px-4 py-3 whitespace-nowrap align-top">
+                      <div className="text-xs font-medium">
+                        {new Date(t.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                      <div className="text-[11px] text-ink-subtle">
+                        {new Date(t.createdAt).toLocaleDateString([], { day: "2-digit", month: "short" })}
+                      </div>
+                      <div className="text-[10px] text-ink-subtle mt-0.5">
+                        {relativeTime(t.createdAt)}
+                      </div>
                     </td>
-                    <td className="px-5 py-3 text-ink-muted">
-                      {originator?.id ? (
-                        <Link href={`/partners/${originator.id}`} className="hover:underline">
-                          {originator.name}
-                        </Link>
+
+                    {/* Pickup time */}
+                    <td className="px-4 py-3 whitespace-nowrap align-top">
+                      {pickupTime ? (
+                        <>
+                          <div className="text-xs font-medium">
+                            {pickupTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                          <div className="text-[11px] text-ink-subtle">
+                            {pickupTime.toLocaleDateString([], { day: "2-digit", month: "short" })}
+                          </div>
+                          <span className="inline-block mt-1 text-[10px] uppercase tracking-wide bg-info/30 text-info-fg px-1.5 py-0.5 rounded">
+                            Pre-book
+                          </span>
+                        </>
                       ) : (
-                        <code className="text-xs">{t.originatorPartnerId.slice(0, 8)}…</code>
+                        <>
+                          <span className="inline-block text-[10px] uppercase tracking-wide bg-warning/40 text-warning-fg px-1.5 py-0.5 rounded">
+                            ASAP
+                          </span>
+                          {durationMs !== null && (
+                            <div className="text-[11px] text-ink-subtle mt-1">
+                              {fmtDuration(durationMs)} trip
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-ink-muted">
-                      {recipient?.id ? (
-                        <Link href={`/partners/${recipient.id}`} className="hover:underline">
-                          {recipient.name}
-                        </Link>
-                      ) : (
-                        <span className="text-xs text-ink-subtle">—</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-3">
-                      <Link href={`/transits/${t.id}`} className="hover:underline">
-                        <code className="text-xs">{t.originatorBookingExternalId}</code>
+
+                    {/* Route */}
+                    <td className="px-4 py-3 align-top">
+                      <Link href={`/transits/${t.id}`} className="block hover:underline">
+                        <div className="text-xs text-ink truncate max-w-[260px]">
+                          {bp.pickup?.address ?? "—"}
+                        </div>
+                        <div className="text-[10px] text-ink-subtle">↓</div>
+                        <div className="text-xs text-ink truncate max-w-[260px]">
+                          {bp.dropoff?.address ?? "—"}
+                        </div>
+                        <div className="mt-1">
+                          <code className="text-[10px] text-ink-subtle">{t.originatorBookingExternalId}</code>
+                        </div>
                       </Link>
                     </td>
-                    <td className="px-5 py-3">
-                      <StatusBadge status={t.status} />
+
+                    {/* Fleet & driver */}
+                    <td className="px-4 py-3 align-top text-xs">
+                      <div className="text-ink-muted text-[10px] uppercase tracking-wide font-semibold">
+                        Sent from
+                      </div>
+                      <div className="text-ink truncate max-w-[180px]">
+                        {originator?.id ? (
+                          <Link href={`/partners/${originator.id}`} className="hover:underline">
+                            {originator.name}
+                          </Link>
+                        ) : (
+                          <code className="text-[10px]">{t.originatorPartnerId.slice(0, 8)}…</code>
+                        )}
+                      </div>
+                      <div className="text-ink-muted text-[10px] uppercase tracking-wide font-semibold mt-2">
+                        Sent to
+                      </div>
+                      <div className="text-ink truncate max-w-[180px]">
+                        {recipient?.id ? (
+                          <Link href={`/partners/${recipient.id}`} className="hover:underline">
+                            {recipient.name}
+                          </Link>
+                        ) : (
+                          <span className="text-ink-subtle">—</span>
+                        )}
+                      </div>
+                      {driverName && (
+                        <div className="mt-2 pt-2 border-t border-border">
+                          <div className="text-ink-muted text-[10px] uppercase tracking-wide font-semibold">
+                            Driver
+                          </div>
+                          <div className="text-ink truncate max-w-[180px]">{driverName}</div>
+                          {driverPhone && (
+                            <a
+                              href={`tel:${driverPhone.replace(/\s+/g, "")}`}
+                              className="text-[11px] text-ink-muted hover:text-ink hover:underline"
+                            >
+                              {driverPhone}
+                            </a>
+                          )}
+                          {driver?.description && (
+                            <div className="text-[10px] text-ink-subtle truncate max-w-[180px]">
+                              {driver.description}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </td>
-                    <td className="px-5 py-3 text-xs text-ink-muted">
-                      {fs
-                        ? `send ${fs.sendFeePence}p · recv ${fs.receiveFeePence}p · trip +${fs.computedPassengerAddOnsPence}p`
-                        : "—"}
+
+                    {/* Status */}
+                    <td className="px-4 py-3 align-top">
+                      <StatusBadge status={t.status} />
+                      {durationMs !== null && (
+                        <div className="text-[11px] text-ink-subtle mt-1">
+                          {fmtDuration(durationMs)}
+                        </div>
+                      )}
+                    </td>
+
+                    {/* Fee */}
+                    <td className="px-4 py-3 text-right align-top tabular-nums">
+                      {t.feeSnapshot ? (
+                        <div className="text-xs font-medium">
+                          {fmtMoney(t.feeSnapshot.receiveFeePence)}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-ink-subtle">—</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -237,4 +386,17 @@ function relativeTime(d: Date | string) {
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
+}
+
+function fmtDuration(ms: number) {
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+function fmtMoney(pence: number) {
+  return pence >= 1000 ? `£${(pence / 100).toFixed(2)}` : `${pence}p`;
 }

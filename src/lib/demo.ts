@@ -189,10 +189,10 @@ function pickRandom<T>(arr: T[]): T {
 function sampleDriver() {
   const samples = [
     {
-      driver: { first_name: "Michael", last_name: "Higgins", phone_number: "+353 1 555 0099", license_number: "ZXZ151YTY" },
+      driver: { first_name: "James", last_name: "Carter", phone_number: "+44 20 7946 0099", license_number: "GB-PHV-9981" },
       description: "Renault Scenic (Black)",
       vehicle_class: "MPV",
-      vehicle_license_plate: "12-D-9999",
+      vehicle_license_plate: "LK22 XAB",
       make: "Renault",
       model: "Scenic",
       colour: "BLACK",
@@ -201,10 +201,10 @@ function sampleDriver() {
       tags: ["child-seat"],
     },
     {
-      driver: { first_name: "Aoife", last_name: "Murphy", phone_number: "+353 1 555 0123", license_number: "DR-0049" },
+      driver: { first_name: "Aisha", last_name: "Patel", phone_number: "+44 161 555 0123", license_number: "GB-PHV-3412" },
       description: "Skoda Octavia (Silver)",
       vehicle_class: "Saloon",
-      vehicle_license_plate: "22-D-4421",
+      vehicle_license_plate: "MA23 PYR",
       make: "Skoda",
       model: "Octavia",
       colour: "SILVER",
@@ -213,10 +213,10 @@ function sampleDriver() {
       tags: [],
     },
     {
-      driver: { first_name: "Diarmuid", last_name: "O'Brien", phone_number: "+353 1 555 0188", license_number: "RA-2200" },
+      driver: { first_name: "Daniel", last_name: "O'Connor", phone_number: "+44 121 555 0188", license_number: "GB-PHV-7720" },
       description: "Mercedes E-Class (Black)",
       vehicle_class: "Executive",
-      vehicle_license_plate: "23-D-0188",
+      vehicle_license_plate: "BW73 EVK",
       make: "Mercedes-Benz",
       model: "E-Class",
       colour: "BLACK",
@@ -225,10 +225,10 @@ function sampleDriver() {
       tags: ["electric", "premium"],
     },
     {
-      driver: { first_name: "Niamh", last_name: "Walsh", phone_number: "+353 1 555 0254", license_number: "WX-1102" },
+      driver: { first_name: "Sophie", last_name: "Wright", phone_number: "+44 113 555 0254", license_number: "GB-PHV-1102" },
       description: "Toyota Prius (White)",
       vehicle_class: "Saloon",
-      vehicle_license_plate: "24-D-1102",
+      vehicle_license_plate: "LS24 TPS",
       make: "Toyota",
       model: "Prius",
       colour: "WHITE",
