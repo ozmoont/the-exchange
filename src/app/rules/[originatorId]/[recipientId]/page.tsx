@@ -67,15 +67,22 @@ export default async function EditRulePage({
   const [recipient] = await db.select().from(partners).where(eq(partners.id, recipientId));
   if (!originator || !recipient || originator.id === recipient.id) notFound();
 
-  const [forward] = await db
-    .select()
-    .from(partnerRules)
-    .where(and(eq(partnerRules.originatorId, originatorId), eq(partnerRules.recipientId, recipientId)));
+  // Using .at(0) gives us `T | undefined` explicitly — `const [first]` is
+  // typed as `T` under strict mode without noUncheckedIndexedAccess, which
+  // collapses the `?? "none"` branch downstream.
+  const forward = (
+    await db
+      .select()
+      .from(partnerRules)
+      .where(and(eq(partnerRules.originatorId, originatorId), eq(partnerRules.recipientId, recipientId)))
+  ).at(0);
 
-  const [reverse] = await db
-    .select()
-    .from(partnerRules)
-    .where(and(eq(partnerRules.originatorId, recipientId), eq(partnerRules.recipientId, originatorId)));
+  const reverse = (
+    await db
+      .select()
+      .from(partnerRules)
+      .where(and(eq(partnerRules.originatorId, recipientId), eq(partnerRules.recipientId, originatorId)))
+  ).at(0);
 
   type RuleState = "allow" | "block" | "none";
   const currentForward: RuleState = forward?.rule ?? "none";
