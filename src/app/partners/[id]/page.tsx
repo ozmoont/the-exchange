@@ -1,12 +1,13 @@
 import { db } from "@/db/client";
 import { partners, partnerRules, transits } from "@/db/schema";
-import { desc, eq, or } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { routeBooking } from "@/lib/routing";
 import { InboundWebhookSimulator } from "@/components/inbound-webhook-simulator";
 import { requirePartnerAccess } from "@/lib/auth";
+import { LiveRefresh } from "@/components/live-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -92,8 +93,14 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
     .orderBy(desc(transits.createdAt))
     .limit(10);
 
+  // Partner health metrics — recomputed on every render. With LiveRefresh
+  // ticking the dashboard every 10s and demo mode advancing transits every
+  // 20s, these numbers visibly change during a demo.
+  const metrics = await computePartnerMetrics(partner.id);
+
   return (
     <div className="space-y-6">
+      <LiveRefresh interval={10000} />
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
@@ -123,6 +130,32 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
           )}
           <Link href="/partners" className="text-sm text-ink-muted hover:text-ink">← All partners</Link>
         </div>
+      </div>
+
+      {/* Health metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard
+          label="In flight"
+          value={metrics.inFlight}
+          subtitle={metrics.inFlight === 0 ? "no active transits" : metrics.inFlight === 1 ? "transit currently routing" : "transits currently routing"}
+        />
+        <MetricCard
+          label="Completed (24h)"
+          value={metrics.completed24h}
+          subtitle="passenger trips delivered"
+          tone="success"
+        />
+        <MetricCard
+          label="Success rate (24h)"
+          value={metrics.successRate === null ? "—" : `${metrics.successRate}%`}
+          subtitle={metrics.total24h === 0 ? "no transits in last 24h" : `of ${metrics.total24h} total transits`}
+          tone={metrics.successRate !== null && metrics.successRate < 80 ? "danger" : "success"}
+        />
+        <MetricCard
+          label="Last activity"
+          value={metrics.lastActivityAgo ?? "—"}
+          subtitle={metrics.lastActivityAt ? new Date(metrics.lastActivityAt).toLocaleString() : "no transits yet"}
+        />
       </div>
 
       {/* Configuration + Can route to */}
@@ -340,3 +373,101 @@ function TransitStatusBadge({ status }: { status: string }) {
       : "badge-neutral";
   return <span className={cls}>{status.replace(/_/g, " ")}</span>;
 }
+
+// ---------------------------------------------------------------------------
+// Health metrics
+// ---------------------------------------------------------------------------
+
+const IN_FLIGHT_STATUSES = ["pushed", "accepted", "driver_assigned", "en_route", "on_board"] as const;
+const FAILED_STATUSES = ["failed", "no_match", "cancelled"] as const;
+
+type PartnerMetrics = {
+  inFlight: number;
+  completed24h: number;
+  total24h: number;
+  successRate: number | null;
+  lastActivityAt: Date | null;
+  lastActivityAgo: string | null;
+};
+
+async function computePartnerMetrics(partnerId: string): Promise<PartnerMetrics> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const involvedExpr = or(
+    eq(transits.originatorPartnerId, partnerId),
+    eq(transits.recipientPartnerId, partnerId),
+  );
+
+  // Count by status in last 24h — one round-trip via GROUP BY
+  const statusBuckets = await db
+    .select({ status: transits.status, n: count() })
+    .from(transits)
+    .where(and(involvedExpr, gte(transits.createdAt, since)))
+    .groupBy(transits.status);
+
+  let completed24h = 0;
+  let failed24h = 0;
+  let total24h = 0;
+  for (const row of statusBuckets) {
+    const n = Number(row.n);
+    total24h += n;
+    if (row.status === "completed") completed24h += n;
+    else if ((FAILED_STATUSES as readonly string[]).includes(row.status)) failed24h += n;
+  }
+  // Success rate counts only resolved transits (completed + failed bucket).
+  // In-flight transits are excluded so the rate doesn't dip artificially
+  // while traffic is mid-flight.
+  const resolved = completed24h + failed24h;
+  const successRate = resolved === 0 ? null : Math.round((completed24h / resolved) * 100);
+
+  // In-flight count — all time, not just 24h, so old stuck transits are visible
+  const [{ n: inFlightN } = { n: 0 }] = await db
+    .select({ n: count() })
+    .from(transits)
+    .where(and(involvedExpr, inArray(transits.status, IN_FLIGHT_STATUSES as unknown as string[])));
+  const inFlight = Number(inFlightN);
+
+  // Last activity = max(updated_at) on any transit involving this partner
+  const [lastRow] = await db
+    .select({ updatedAt: sql<Date>`max(${transits.updatedAt})` })
+    .from(transits)
+    .where(involvedExpr);
+  const lastActivityAt = lastRow?.updatedAt ? new Date(lastRow.updatedAt) : null;
+  const lastActivityAgo = lastActivityAt ? relativeTimeAgo(lastActivityAt) : null;
+
+  return { inFlight, completed24h, total24h, successRate, lastActivityAt, lastActivityAgo };
+}
+
+function relativeTimeAgo(d: Date): string {
+  const sec = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
+function MetricCard({
+  label,
+  value,
+  subtitle,
+  tone,
+}: {
+  label: string;
+  value: number | string;
+  subtitle?: string;
+  tone?: "success" | "danger" | "neutral";
+}) {
+  const accent =
+    tone === "success" ? "bg-success/30" :
+    tone === "danger" ? "bg-danger/30" :
+    "";
+  return (
+    <div className={`stat ${accent}`}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{typeof value === "number" ? value.toLocaleString() : value}</div>
+      {subtitle && <div className="text-xs text-ink-muted mt-1">{subtitle}</div>}
+    </div>
+  );
+}
+
