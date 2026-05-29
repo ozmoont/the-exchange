@@ -193,6 +193,17 @@ export async function destroySession(): Promise<void> {
 }
 
 export async function getCurrentUser(): Promise<SessionUser | null> {
+  // Demo / pre-pilot escape hatch — every visitor is treated as super_admin
+  // when DISABLE_AUTH=true. Pair with the same env var check in middleware.ts.
+  if (process.env.DISABLE_AUTH === "true") {
+    return {
+      id: "demo-mode-no-auth",
+      email: "demo@the-exchange.local",
+      role: "super_admin",
+      partnerId: null,
+    };
+  }
+
   const c = await cookies();
   const cookieValue = c.get(COOKIE_NAME)?.value;
   if (!cookieValue) return null;

@@ -33,6 +33,13 @@ export const config = {
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Demo / pre-pilot escape hatch — set DISABLE_AUTH=true in Vercel env vars
+  // to remove all auth checks. Flip back to false (or remove the var) when
+  // ready to require sign-in again.
+  if (process.env.DISABLE_AUTH === "true") {
+    return NextResponse.next();
+  }
+
   if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p) || pathname === p.replace(/\/$/, ""))) {
     return NextResponse.next();
   }
