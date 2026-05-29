@@ -3,6 +3,7 @@ import { transits, partners } from "@/db/schema";
 import { desc, eq, or } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import Link from "next/link";
+import { LiveRefresh } from "@/components/live-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,7 @@ export default async function BookingsPage({
 
   return (
     <div className="space-y-6">
+      <LiveRefresh interval={10000} />
       <div>
         <p className="text-xs uppercase tracking-[0.2em] text-ink-muted font-semibold">
           {isSuper ? "Network activity" : "Your bookings"}

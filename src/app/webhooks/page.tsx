@@ -3,6 +3,7 @@ import { webhookDeliveries } from "@/db/schema";
 import { and, desc, eq, like, type SQL } from "drizzle-orm";
 import { requireSuperAdmin } from "@/lib/auth";
 import Link from "next/link";
+import { LiveRefresh } from "@/components/live-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,7 @@ export default async function WebhooksPage({
 
   return (
     <div className="space-y-6">
+      <LiveRefresh interval={10000} />
       <div>
         <p className="text-xs uppercase tracking-[0.2em] text-ink-muted font-semibold">
           Inbound webhook log

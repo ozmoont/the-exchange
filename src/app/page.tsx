@@ -5,6 +5,7 @@ import { count, desc, eq, gte } from "drizzle-orm";
 import { setKillSwitch } from "@/lib/routing";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
+import { LiveRefresh } from "@/components/live-refresh";
 
 export const dynamic = "force-dynamic";
 
@@ -241,6 +242,7 @@ async function Dashboard({
 
   return (
     <div className="space-y-8">
+      <LiveRefresh interval={10000} />
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-ink-muted font-semibold">

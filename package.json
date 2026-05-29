@@ -13,7 +13,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "seed": "tsx --env-file=.env.local src/scripts/seed.ts",
-    "smoke": "tsx --env-file=.env.local src/scripts/smoke-test.ts"
+    "smoke": "tsx --env-file=.env.local src/scripts/smoke-test.ts",
+    "send-webhook": "tsx --env-file=.env.local src/scripts/send-webhook.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.33.0",

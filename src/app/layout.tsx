@@ -2,6 +2,7 @@ import "./globals.css";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { getCurrentUser } from "@/lib/auth";
+import { maybeTickDemoMode } from "@/lib/demo";
 
 export const metadata = {
   title: "The Exchange",
@@ -9,6 +10,11 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Demo-mode background activity — ticks one transit forward every 20s.
+  // No-op when DISABLE_AUTH != true. Costs one SELECT on every other page
+  // render at steady state; fires the work when the cooldown elapses.
+  await maybeTickDemoMode();
+
   const user = await getCurrentUser();
   const isSuper = user?.role === "super_admin";
 

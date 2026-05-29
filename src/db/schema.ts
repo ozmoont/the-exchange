@@ -247,6 +247,10 @@ export const networkControls = pgTable("network_controls", {
   killSwitchReason: text("kill_switch_reason"),
   killSwitchToggledAt: timestamp("kill_switch_toggled_at"),
   killSwitchToggledBy: text("kill_switch_toggled_by"),
+  // Demo mode (DISABLE_AUTH=true) ticks one transit forward in its lifecycle
+  // periodically so the dashboard feels alive without manual interaction.
+  // Stored here for cross-instance cooldown enforcement.
+  lastDemoTickAt: timestamp("last_demo_tick_at"),
 });
 
 // ---------- auth ----------

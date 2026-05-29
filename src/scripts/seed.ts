@@ -16,6 +16,8 @@ import {
   webhookDeliveries,
   users,
 } from "../db/schema";
+import { encryptCredentials } from "../lib/crypto";
+import { randomBytes } from "node:crypto";
 
 async function main() {
   console.log("Seeding…");
@@ -33,6 +35,14 @@ async function main() {
   await db.delete(networkControls);
   console.log("  cleared previous data");
 
+  // Pre-baked webhook secrets so `pnpm send-webhook` works against seeded
+  // partners without going through the connect-via-UI flow. In production
+  // (real iCabbi tenants) these come from the integration page on first
+  // connect. They're encrypted at rest with PARTNER_CREDENTIAL_KEY.
+  const dublinSecret = randomBytes(32).toString("base64url");
+  const corkSecret = randomBytes(32).toString("base64url");
+  const cmacSecret = randomBytes(32).toString("base64url");
+
   const [dublin, cork, cmac] = await db
     .insert(partners)
     .values([
@@ -47,7 +57,7 @@ async function main() {
         vehicleTypes: ["standard", "exec"],
         bookingTypes: ["asap", "prebook"],
         adapterKey: "mock_icabbi",
-        credentials: { tenantLabel: "dublin" },
+        credentials: encryptCredentials({ tenantLabel: "dublin", webhookSecret: dublinSecret }) as unknown as Record<string, unknown>,
       },
       {
         kind: "icabbi_fleet",
@@ -60,7 +70,7 @@ async function main() {
         vehicleTypes: ["standard"],
         bookingTypes: ["asap", "prebook"],
         adapterKey: "mock_icabbi",
-        credentials: { tenantLabel: "cork" },
+        credentials: encryptCredentials({ tenantLabel: "cork", webhookSecret: corkSecret }) as unknown as Record<string, unknown>,
       },
       {
         kind: "external_corporate",
@@ -73,7 +83,7 @@ async function main() {
         vehicleTypes: ["standard", "exec"],
         bookingTypes: ["prebook"],
         adapterKey: "mock_cmac",
-        credentials: {},
+        credentials: encryptCredentials({ webhookSecret: cmacSecret }) as unknown as Record<string, unknown>,
       },
     ])
     .returning();
