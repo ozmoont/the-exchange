@@ -8,6 +8,9 @@ import {
   statusBadgeClass,
   statusLabel,
 } from "@/lib/status-labels";
+import { fireJobs } from "@/lib/fire-jobs";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -22,14 +25,43 @@ export const dynamic = "force-dynamic";
  *   - Region breakdown
  *   - 14-day volume sparkline
  */
+async function fireJobsAction(formData: FormData) {
+  "use server";
+  await requireSuperAdmin();
+  const count = Math.min(Math.max(Number(formData.get("count") ?? 50), 1), 500);
+  const result = await fireJobs({ count });
+  revalidatePath("/distribution");
+  revalidatePath("/bookings");
+  revalidatePath("/");
+  redirect(
+    `/distribution?fired=${result.attempted}&pushed=${result.pushed}&no_match=${result.no_match}&error=${result.error}&elapsedMs=${result.elapsedMs}`,
+  );
+}
+
 export default async function DistributionPage({
   searchParams,
 }: {
-  searchParams: Promise<{ window?: string }>;
+  searchParams: Promise<{
+    window?: string;
+    fired?: string;
+    pushed?: string;
+    no_match?: string;
+    error?: string;
+    elapsedMs?: string;
+  }>;
 }) {
   await requireSuperAdmin();
   const sp = await searchParams;
   const windowSize = Math.min(Math.max(Number(sp.window) || 1000, 100), 5000);
+  const firedResult = sp.fired
+    ? {
+        attempted: Number(sp.fired),
+        pushed: Number(sp.pushed ?? 0),
+        no_match: Number(sp.no_match ?? 0),
+        error: Number(sp.error ?? 0),
+        elapsedMs: Number(sp.elapsedMs ?? 0),
+      }
+    : null;
 
   // Recent bookings — ordered, capped
   const rows = await db
@@ -196,6 +228,55 @@ export default async function DistributionPage({
           </Link>
         </div>
       </div>
+
+      {firedResult && (
+        <div className="rounded-md bg-success/40 border border-green-300 px-4 py-3 text-sm text-success-fg flex items-baseline justify-between gap-3 flex-wrap">
+          <span>
+            Fired <strong>{firedResult.attempted}</strong> bookings in{" "}
+            <strong>{(firedResult.elapsedMs / 1000).toFixed(1)}s</strong> ·{" "}
+            <strong>{firedResult.pushed}</strong> sent to a fleet ·{" "}
+            <strong>{firedResult.no_match}</strong> no match
+            {firedResult.error > 0 ? <> · <strong>{firedResult.error}</strong> errors</> : null}
+          </span>
+          <Link href="/distribution" className="text-xs underline">dismiss</Link>
+        </div>
+      )}
+
+      {/* Demo controls */}
+      <form
+        action={fireJobsAction}
+        className="card p-4 bg-warning/40 border border-yellow-300 flex items-baseline justify-between gap-4 flex-wrap"
+      >
+        <div>
+          <p className="text-xs uppercase tracking-wide text-yellow-900 font-semibold">
+            Demo controls
+          </p>
+          <p className="text-sm text-yellow-900/90 mt-1 max-w-xl">
+            Fire a batch of synthetic bookings through the routing engine — same code path as a real
+            iCabbi webhook, with random pickups across UK hotspots. Watch the map and stats update live.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-yellow-900 font-medium" htmlFor="count">
+            Count
+          </label>
+          <select
+            id="count"
+            name="count"
+            defaultValue="50"
+            className="input bg-white border-yellow-300 w-24"
+          >
+            <option value="10">10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+          <button type="submit" className="btn-primary">
+            Fire jobs
+          </button>
+        </div>
+      </form>
 
       {/* Clickable top-line metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

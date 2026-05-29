@@ -1,12 +1,13 @@
 import { db } from "@/db/client";
 import { transits, transitEvents, partners } from "@/db/schema";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { forwardStatusUpdate } from "@/lib/routing";
 import { requireUser } from "@/lib/auth";
 import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
+import { RoutingTrace } from "@/components/routing-trace";
 
 export const dynamic = "force-dynamic";
 
@@ -147,6 +148,24 @@ export default async function TransitDetailPage({
   });
   const driverDetail = driverEvent?.detail as DriverEventDetail | undefined;
 
+  // Resolve partner names for the routing trace. Pull every recipientId that
+  // appears in waterfallAttempts in one query.
+  const trace = transit.routingTrace as
+    | {
+        waterfallAttempts?: Array<{ recipientId: string }>;
+        winner?: string | null;
+      }
+    | null;
+  const traceIds = new Set<string>();
+  if (trace?.waterfallAttempts) {
+    for (const a of trace.waterfallAttempts) traceIds.add(a.recipientId);
+  }
+  if (trace?.winner) traceIds.add(trace.winner);
+  const tracedPartners = traceIds.size
+    ? await db.select().from(partners).where(inArray(partners.id, [...traceIds]))
+    : [];
+  const partnerNames = new Map(tracedPartners.map((p) => [p.id, p.name]));
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-4">
@@ -230,6 +249,10 @@ export default async function TransitDetailPage({
           Booking is in terminal state <code>{transit.status}</code>. No further status changes will be accepted.
         </div>
       )}
+
+      <Section title="Routing decision">
+        <RoutingTrace trace={transit.routingTrace} partnerNames={partnerNames} />
+      </Section>
 
       <Section title="Event timeline">
         {events.length === 0 ? (
