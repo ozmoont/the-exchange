@@ -77,8 +77,9 @@ export default async function EditRulePage({
     .from(partnerRules)
     .where(and(eq(partnerRules.originatorId, recipientId), eq(partnerRules.recipientId, originatorId)));
 
-  const currentForward = forward?.rule ?? "none";
-  const currentReverse = reverse?.rule ?? "none";
+  type RuleState = "allow" | "block" | "none";
+  const currentForward: RuleState = forward?.rule ?? "none";
+  const currentReverse: RuleState = reverse?.rule ?? "none";
   const routes = currentForward === "allow" && currentReverse === "allow";
 
   return (
