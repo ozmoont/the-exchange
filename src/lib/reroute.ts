@@ -238,6 +238,9 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
 
   // Audit-log the rerouting decision so super admins can review them
   const [newPartner] = await db.select().from(partners).where(eq(partners.id, next.recipientId));
+  const [previousPartner] = t.recipientPartnerId
+    ? await db.select().from(partners).where(eq(partners.id, t.recipientPartnerId))
+    : [null];
   await db.insert(auditLog).values({
     category: "booking",
     actor: "system",
@@ -253,6 +256,32 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
       rerouteCount: t.rerouteCount + 1,
     },
   });
+
+  // Gap #3 — notify the demand fleet so their dispatch / passenger app can
+  // react to the change in fulfilling partner. Fire-and-forget; failures are
+  // recorded in webhook_deliveries via the helper itself.
+  try {
+    const { sendOutboundEvent } = await import("@/lib/outbound-webhooks");
+    await sendOutboundEvent(t.originatorPartnerId, "transit.rerouted", {
+      originatorBookingExternalId: t.originatorBookingExternalId,
+      transitId: t.id,
+      previous_recipient: t.recipientPartnerId
+        ? { id: t.recipientPartnerId, name: previousPartner?.name ?? null }
+        : null,
+      new_recipient: {
+        id: next.recipientId,
+        name: newPartner?.name ?? null,
+      },
+      reason: "accept_window_expired",
+      reroute_count: t.rerouteCount + 1,
+      occurred_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn(
+      `[reroute] outbound event for transit ${t.id} failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   return { transitId: t.id, outcome: "rerouted", newRecipientId: next.recipientId };
 }

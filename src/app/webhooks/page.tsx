@@ -25,6 +25,8 @@ const OUTCOMES = [
   "ack_unhandled",
   "signature_invalid",
   "error",
+  "delivered",        // outbound success
+  "delivery_failed",  // outbound failure
 ] as const;
 
 type Outcome = (typeof OUTCOMES)[number];
@@ -140,6 +142,7 @@ export default async function WebhooksPage({
             <thead className="text-xs uppercase tracking-wide text-ink-subtle">
               <tr>
                 <th className="text-left px-5 py-3 font-semibold">When</th>
+                <th className="text-left px-5 py-3 font-semibold w-[60px]">Dir</th>
                 <th className="text-left px-5 py-3 font-semibold">Source</th>
                 <th className="text-left px-5 py-3 font-semibold">Event ID</th>
                 <th className="text-left px-5 py-3 font-semibold">Event type</th>
@@ -150,13 +153,37 @@ export default async function WebhooksPage({
             <tbody className="divide-y divide-border">
               {rows.map((r) => {
                 const payload = r.payload as Record<string, unknown>;
-                const eventType = String(payload.event_type ?? payload.type ?? "—");
+                const isOutbound = r.source.startsWith("outbound:");
+                // For outbound deliveries the envelope is nested under
+                // payload.envelope; the inbound shape has it at root.
+                const envelope = (isOutbound
+                  ? (payload.envelope as Record<string, unknown>)
+                  : payload) ?? payload;
+                const eventType = String(
+                  envelope.event_type ??
+                    envelope.type ??
+                    payload.event_type ??
+                    payload.type ??
+                    "—",
+                );
                 const preview = previewPayload(payload);
                 return (
                   <tr key={r.id} className="align-top">
                     <td className="px-5 py-3 whitespace-nowrap">
                       <div>{new Date(r.receivedAt).toLocaleString()}</div>
                       <div className="text-xs text-ink-subtle">{relativeTime(r.receivedAt)}</div>
+                    </td>
+                    <td className="px-5 py-3 whitespace-nowrap">
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded ${
+                          isOutbound
+                            ? "bg-warning/40 text-warning-fg"
+                            : "bg-info/40 text-info-fg"
+                        }`}
+                        title={isOutbound ? "We sent this to a partner" : "Partner sent this to us"}
+                      >
+                        {isOutbound ? "↑ out" : "↓ in"}
+                      </span>
                     </td>
                     <td className="px-5 py-3 whitespace-nowrap">
                       <code className="text-xs">{r.source}</code>

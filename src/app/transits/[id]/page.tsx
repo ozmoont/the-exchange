@@ -23,6 +23,87 @@ export const dynamic = "force-dynamic";
 
 const HAPPY_PATH = ["accepted", "driver_assigned", "driver_arrived", "en_route", "on_board", "completed"] as const;
 const TERMINAL: ReadonlySet<string> = new Set(["completed", "cancelled", "failed"]);
+/**
+ * Terminal-failed statuses that admins can manually re-route from. Excludes
+ * 'completed' (don't re-route something that already succeeded) and 'paused'
+ * (the kill-switch resume handles those automatically).
+ */
+const FAILED_RETRYABLE: ReadonlySet<string> = new Set([
+  "no_match",
+  "cancelled",
+  "failed",
+  "error_auth",
+  "error_other",
+]);
+
+async function retryRoutingAction(formData: FormData) {
+  "use server";
+  const transitId = String(formData.get("transitId") ?? "");
+  if (!transitId) return;
+
+  const user = await requireUser();
+  if (user.role !== "super_admin") redirect("/");
+
+  const { db } = await import("@/db/client");
+  const { transits, auditLog } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const { routeBooking } = await import("@/lib/routing");
+
+  const [t] = await db.select().from(transits).where(eq(transits.id, transitId));
+  if (!t) return;
+  if (!FAILED_RETRYABLE.has(t.status)) return; // guard
+
+  const before = {
+    status: t.status,
+    recipientPartnerId: t.recipientPartnerId,
+    rerouteCount: t.rerouteCount,
+  };
+
+  // Reset the transit so routeBooking treats it like a fresh attempt. We
+  // keep the booking_payload and the original transit id (audit continuity)
+  // but clear everything routing-related so the engine doesn't see prior
+  // state as "already pushed".
+  await db
+    .update(transits)
+    .set({
+      status: "received",
+      recipientPartnerId: null,
+      recipientBookingExternalId: null,
+      feeSnapshot: null,
+      routingTrace: null,
+      acceptDeadline: null,
+      rerouteCount: 0,
+      partnershipCoid: null,
+      recipientClientId: null,
+      recipientServerName: null,
+      recipientSiteId: null,
+      trackMyTaxiLink: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(transits.id, transitId));
+
+  await db.insert(auditLog).values({
+    category: "booking",
+    actor: "admin_user",
+    actorRef: user.email,
+    action: "transit.manual_retry",
+    subjectType: "transit",
+    subjectId: transitId,
+    before,
+    after: { reset_to: "received" },
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const booking = t.bookingPayload as any;
+  const result = await routeBooking({
+    originatorPartnerId: t.originatorPartnerId,
+    booking,
+  });
+
+  revalidatePath(`/transits/${transitId}`);
+  revalidatePath("/bookings");
+  redirect(`/transits/${transitId}?retried=${result.outcome}`);
+}
 
 async function simulateStatusAction(formData: FormData) {
   "use server";
@@ -98,10 +179,14 @@ function sampleDriverDetail() {
 
 export default async function TransitDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ retried?: string }>;
 }) {
   const { id } = await params;
+  const sp = await searchParams;
+  const retriedOutcome = sp.retried ?? null;
   const user = await requireUser();
   const [transit] = await db.select().from(transits).where(eq(transits.id, id));
   if (!transit) notFound();
@@ -190,6 +275,23 @@ export default async function TransitDetailPage({
         <Link href="/bookings" className="text-sm text-ink-muted hover:text-ink">← All bookings</Link>
       </div>
 
+      {retriedOutcome && (
+        <div
+          className={`rounded-md border px-4 py-3 text-sm ${
+            retriedOutcome === "pushed"
+              ? "bg-success/40 border-green-300 text-success-fg"
+              : retriedOutcome === "no_match"
+              ? "bg-warning/40 border-yellow-300 text-warning-fg"
+              : "bg-danger/30 border-red-300 text-red-800"
+          }`}
+        >
+          Retry routing completed: <strong>{retriedOutcome}</strong>
+          {retriedOutcome === "pushed" && " — booking is back in the network."}
+          {retriedOutcome === "no_match" && " — still no eligible partner. Try again later or fix routing rules."}
+          {retriedOutcome === "error" && " — every candidate errored again. Check partner credentials."}
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 gap-6">
         <Section title="Route">
           <KV
@@ -249,6 +351,32 @@ export default async function TransitDetailPage({
           <span aria-hidden className="text-lg">🔒</span>
           <span>{DRIVER_DETAILS_HIDDEN_EXPLAINER}</span>
         </div>
+      )}
+
+      {user.role === "super_admin" && FAILED_RETRYABLE.has(transit.status) && (
+        <section className="card bg-info/30 border-l-4 border-l-sky-500 p-5">
+          <h2 className="text-base font-semibold text-info-fg mb-1">
+            Retry routing
+          </h2>
+          <p className="text-sm text-ink-muted mb-4 max-w-prose">
+            This booking ended at <code>{transit.status}</code>. Retrying resets
+            the recipient + accept deadline + reroute count and replays the
+            routing engine with the original booking payload — useful when a
+            transient issue caused the original failure (partner outage,
+            credential rot, network blip) and the underlying state has since
+            recovered.
+          </p>
+          <form action={retryRoutingAction}>
+            <input type="hidden" name="transitId" value={transit.id} />
+            <button type="submit" className="btn-primary">
+              Retry routing
+            </button>
+          </form>
+          <p className="text-xs text-ink-subtle mt-3">
+            Audit-logged as <code>transit.manual_retry</code> with the actor and
+            original status. Booking payload is preserved.
+          </p>
+        </section>
       )}
 
       {canSimulate && !isTerminal && transit.recipientPartnerId && (

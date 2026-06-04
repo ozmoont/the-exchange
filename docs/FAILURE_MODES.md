@@ -218,7 +218,7 @@ The passenger experience downstream: their dispatcher (iCabbi) shows "Sorry, we 
 
 These came out of this analysis. Each is a place a real partner conversation could fumble.
 
-### Gap #1 — Paused bookings don't auto-resume
+### ✅ Gap #1 — Paused bookings don't auto-resume *(closed)*
 
 **Symptom**: Kill switch engages while a wave of bookings arrive. Admin disengages 10 minutes later. The bookings that landed during the pause stay at `paused` indefinitely. No webhook back to originator. Real fleets would see their dispatcher hanging.
 
@@ -248,7 +248,7 @@ These came out of this analysis. Each is a place a real partner conversation cou
 
 ---
 
-### Gap #3 — Reroute transitions are invisible to the demand fleet
+### ✅ Gap #3 — Reroute transitions are invisible to the demand fleet *(closed)*
 
 **Symptom**: Demand fleet pushed a booking to us. We routed to fleet X. X ghosted. We rerouted to fleet Y. Y completed it successfully. The demand fleet's iCabbi tenant only ever sees the booking as `pushed → completed` — no indication anything went sideways behind the scenes.
 
@@ -263,7 +263,7 @@ These came out of this analysis. Each is a place a real partner conversation cou
 
 ---
 
-### Gap #4 — No admin retry button for failed transits
+### ✅ Gap #4 — No admin retry button for failed transits *(closed)*
 
 **Symptom**: A booking ends in `error_other` due to a transient issue (e.g. fleet X had a 30-second outage during our retry window). The booking is stuck. Admin would have to manually re-fire by creating a new transit.
 
