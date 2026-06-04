@@ -2,6 +2,12 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "pnpm db:migrate && pnpm build",
+  "crons": [
+    {
+      "path": "/api/cron/process-queue",
+      "schedule": "* * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/api/webhooks/(.*)",

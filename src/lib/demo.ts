@@ -59,6 +59,22 @@ export async function maybeTickDemoMode(): Promise<void> {
     console.warn("[demo] tick failed:", err instanceof Error ? err.message : err);
   }
 
+  // Drain any received-but-not-yet-routed transits. In production this also
+  // runs on a Vercel cron every minute; the demo tick gives us tighter
+  // feedback locally.
+  try {
+    const { processReceivedTransits } = await import("@/lib/routing");
+    const drain = await processReceivedTransits(20);
+    if (drain.scanned > 0) {
+      console.log(
+        `[demo] drained ${drain.scanned} received transit(s): ` +
+          `pushed=${drain.pushed} no_match=${drain.no_match} error=${drain.error}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[demo] drain failed:", err instanceof Error ? err.message : err);
+  }
+
   // Also enforce the acceptance window. In production this will be a Vercel
   // cron; for demo mode we piggyback on the same cooldown so the dashboard
   // shows live reroutes happening alongside the lifecycle advances.

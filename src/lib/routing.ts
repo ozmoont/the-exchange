@@ -349,7 +349,7 @@ export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: numb
 async function insertTransit(
   originatorPartnerId: string,
   booking: NormalisedBooking,
-  status: "routing" | "paused",
+  status: "routing" | "paused" | "received",
   detail: Record<string, unknown> | null,
 ) {
   const existing = await db
@@ -501,4 +501,131 @@ export async function setKillSwitch(
   }
 
   return { on };
+}
+
+// ---------------------------------------------------------------------------
+// Async routing (P0-3) — receive + drain
+// ---------------------------------------------------------------------------
+//
+// Inbound webhook handlers call `receiveBooking()` instead of `routeBooking()`:
+// it writes the transit at status='received' in a few ms, then returns. The
+// actual routing happens on a background drain (`processReceivedTransits()`).
+// The webhook can 200 ack the partner in under 100ms even if routing requires
+// chained HTTP calls to recipient adapters.
+//
+// `routeBooking()` is still used by synchronous callers (fire-jobs script,
+// the test booking form, the admin retry button) where waiting for the full
+// routing outcome is the point.
+//
+// At pilot scale this is a Postgres-polling drain triggered by Vercel cron
+// every minute (and by the demo background tick locally). When traffic grows
+// beyond ~1000 bookings/minute, swap the drain for Inngest or Trigger.dev
+// using the same `processReceivedTransits()` signature — only the trigger
+// changes, not the work itself.
+
+/**
+ * Record a booking arriving from an originator and return immediately. The
+ * routing engine processes it asynchronously via `processReceivedTransits`.
+ *
+ * Idempotent on (originator, originatorBookingExternalId) — duplicate inbound
+ * deliveries return the existing transit with outcome='duplicate'.
+ *
+ * Kill-switch aware: when engaged, the transit lands at 'paused' rather than
+ * 'received'. The kill-switch-off resume engine picks it up like any other
+ * paused row.
+ */
+export async function receiveBooking(args: {
+  originatorPartnerId: string;
+  booking: NormalisedBooking;
+}): Promise<{ transitId: string; outcome: "received" | "duplicate" | "paused" }> {
+  const { originatorPartnerId, booking } = args;
+
+  // Idempotency first — saves a DB write when the partner retries.
+  const existing = await db
+    .select()
+    .from(transits)
+    .where(
+      and(
+        eq(transits.originatorPartnerId, originatorPartnerId),
+        eq(transits.originatorBookingExternalId, booking.originatorBookingExternalId),
+      ),
+    );
+
+  if (existing[0]) {
+    return { transitId: existing[0].id, outcome: "duplicate" };
+  }
+
+  // Kill-switch aware
+  const [control] = await db.select().from(networkControls).where(eq(networkControls.id, "global"));
+  const killed = control?.killSwitch || process.env.NETWORK_KILL_SWITCH === "true";
+  const status: "received" | "paused" = killed ? "paused" : "received";
+
+  const transit = await insertTransit(
+    originatorPartnerId,
+    booking,
+    status,
+    killed ? { reason: "kill_switch" } : { source: "webhook_ingest" },
+  );
+
+  return { transitId: transit.id, outcome: status };
+}
+
+/**
+ * Background drain: claim received transits, run the routing engine on each,
+ * return aggregate outcomes. Designed to be called by a Vercel cron OR the
+ * demo tick — both safe.
+ *
+ * Concurrency safety: each transit is claimed via a conditional UPDATE
+ * (`status='received' → 'routing'`) that returns the row only if the
+ * transition happened. Two concurrent workers grabbing the same row will
+ * see exactly one succeed; the other skips.
+ */
+export async function processReceivedTransits(
+  limit = 20,
+): Promise<{
+  scanned: number;
+  pushed: number;
+  no_match: number;
+  paused: number;
+  error: number;
+  skipped: number;
+}> {
+  const received = await db
+    .select()
+    .from(transits)
+    .where(eq(transits.status, "received"))
+    .orderBy(transits.createdAt) // FIFO
+    .limit(limit);
+
+  const outcomes = { scanned: received.length, pushed: 0, no_match: 0, paused: 0, error: 0, skipped: 0 };
+
+  for (const t of received) {
+    try {
+      // Claim the row — fail silently if another worker beat us to it
+      const claim = await db
+        .update(transits)
+        .set({ status: "routing", updatedAt: new Date() })
+        .where(and(eq(transits.id, t.id), eq(transits.status, "received")))
+        .returning({ id: transits.id });
+      if (claim.length === 0) {
+        outcomes.skipped++;
+        continue;
+      }
+
+      const booking = t.bookingPayload as unknown as NormalisedBooking;
+      const result = await routeBooking({
+        originatorPartnerId: t.originatorPartnerId,
+        booking,
+      });
+      outcomes[result.outcome]++;
+    } catch (err) {
+      outcomes.error++;
+      console.error(
+        `[process-queue] transit ${t.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return outcomes;
 }

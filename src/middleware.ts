@@ -22,6 +22,7 @@ const PUBLIC_PREFIXES = [
   "/auth/",
   "/api/auth/",
   "/api/webhooks/",
+  "/api/cron/",     // Vercel cron — authenticates via x-vercel-cron / Bearer
   "/api/health",
   "/_next/",
   "/favicon",

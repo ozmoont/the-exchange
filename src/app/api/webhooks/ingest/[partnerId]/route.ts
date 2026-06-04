@@ -6,7 +6,7 @@ import { partners, transits } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { getAdapterForPartner } from "@/adapters/registry";
 import { isFreshDelivery, recordWebhookOutcome, recordRejectedDelivery } from "@/lib/idempotency";
-import { routeBooking, forwardStatusUpdate } from "@/lib/routing";
+import { receiveBooking, forwardStatusUpdate } from "@/lib/routing";
 import {
   checkRateLimit,
   LIMIT_INGEST_PER_PARTNER,
@@ -157,12 +157,22 @@ export async function POST(
 
   if (normalised.kind === "create") {
     try {
-      const result = await routeBooking({
+      // P0-3: receive + ack in tens of ms. The actual routing happens on the
+      // background drain (/api/cron/process-queue or the demo tick). Slow
+      // recipient adapters no longer block the originator's webhook ack.
+      const result = await receiveBooking({
         originatorPartnerId: partnerId,
         booking: normalised.booking,
       });
-      await recordWebhookOutcome(source, envelopeId, "routed");
-      return NextResponse.json({ status: "routed", outcome: result.outcome, transitId: result.transitId }, { status: 200 });
+      await recordWebhookOutcome(
+        source,
+        envelopeId,
+        result.outcome === "duplicate" ? "duplicate" : "routed",
+      );
+      return NextResponse.json(
+        { status: result.outcome, transitId: result.transitId },
+        { status: 200 },
+      );
     } catch (err) {
       await recordWebhookOutcome(source, envelopeId, "error");
       throw err;
