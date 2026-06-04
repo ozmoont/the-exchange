@@ -180,6 +180,46 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
         />
       </div>
 
+      {/* Reliability (rolling 7d) — only show when the partner has received at least 1 booking */}
+      {partner.totalPushed7d !== null && partner.totalPushed7d > 0 && (
+        <Section title="Reliability (rolling 7 days)">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <ReliabilityCard
+              label="Acceptance rate"
+              value={fmtRate(partner.acceptanceRate)}
+              tone={toneForRate(partner.acceptanceRate, 0.85, 0.65)}
+              sub={`of ${partner.totalPushed7d} pushed`}
+            />
+            <ReliabilityCard
+              label="Completion rate"
+              value={fmtRate(partner.completionRate)}
+              tone={toneForRate(partner.completionRate, 0.9, 0.7)}
+              sub="of accepted bookings"
+            />
+            <ReliabilityCard
+              label="Median accept time"
+              value={fmtMs(partner.medianAcceptanceMs)}
+              tone={toneForMs(partner.medianAcceptanceMs)}
+              sub="pushed → accepted"
+            />
+            <ReliabilityCard
+              label="Auto-rerouted away"
+              value={fmtRate(partner.autoRerouteRate)}
+              tone={toneForRate(1 - (partner.autoRerouteRate ?? 0), 0.95, 0.8)}
+              sub="of pushed bookings"
+            />
+          </div>
+          <p className="mt-3 text-xs text-ink-subtle">
+            Last updated{" "}
+            {partner.metricsUpdatedAt
+              ? new Date(partner.metricsUpdatedAt).toLocaleString()
+              : "never"}{" "}
+            · routing engine uses acceptance rate as a tiebreaker; partners
+            with low rates rank lower in the waterfall.
+          </p>
+        </Section>
+      )}
+
       {/* Configuration + Can route to */}
       <div className="grid md:grid-cols-2 gap-6">
         <Section title="Configuration">
@@ -531,5 +571,58 @@ function MetricCard({
       {subtitle && <div className="text-xs text-ink-muted mt-1">{subtitle}</div>}
     </div>
   );
+}
+
+function ReliabilityCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  tone: "good" | "ok" | "bad";
+}) {
+  const accent =
+    tone === "good" ? "border-green-500" :
+    tone === "ok" ? "border-amber-400" :
+    "border-red-500";
+  return (
+    <div className={`card p-4 border-l-4 ${accent}`}>
+      <div className="text-xs uppercase tracking-wide text-ink-subtle font-semibold">{label}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums">{value}</div>
+      <div className="mt-1 text-xs text-ink-muted">{sub}</div>
+    </div>
+  );
+}
+
+function fmtRate(r: number | null): string {
+  if (r === null || Number.isNaN(r)) return "—";
+  return `${(r * 100).toFixed(0)}%`;
+}
+
+function fmtMs(ms: number | null): string {
+  if (ms === null || ms === 0) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return rem ? `${min}m ${rem}s` : `${min}m`;
+}
+
+function toneForRate(rate: number | null, goodThreshold: number, okThreshold: number): "good" | "ok" | "bad" {
+  if (rate === null) return "ok";
+  if (rate >= goodThreshold) return "good";
+  if (rate >= okThreshold) return "ok";
+  return "bad";
+}
+
+function toneForMs(ms: number | null): "good" | "ok" | "bad" {
+  if (ms === null) return "ok";
+  if (ms < 30_000) return "good";   // accepted in <30s
+  if (ms < 60_000) return "ok";     // accepted in <60s
+  return "bad";                     // slow accept
 }
 

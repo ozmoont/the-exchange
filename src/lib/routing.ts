@@ -10,6 +10,7 @@ import {
 import { and, eq, inArray, or } from "drizzle-orm";
 import { resolveFeeSnapshot } from "./fees";
 import { getAdapterForPartner } from "@/adapters/registry";
+import { reliabilityPenalty } from "./reliability";
 import type { NormalisedBooking } from "./types";
 import type { FeeSnapshot } from "@/db/schema";
 
@@ -75,6 +76,8 @@ export async function routeBooking(args: {
     score: number;
     distanceKm: number | null;
     receiveFeePence: number;
+    acceptanceRate?: number | null;
+    reliabilityPenaltyApplied?: number;
     outcome: "pushed" | "error_other" | "error_auth";
     error?: string;
   }> = [];
@@ -104,6 +107,8 @@ export async function routeBooking(args: {
         score: c.score,
         distanceKm: c.distanceKm,
         receiveFeePence: c.fee.receiveFeePence,
+        acceptanceRate: c.acceptanceRate,
+        reliabilityPenaltyApplied: c.reliabilityPenaltyApplied,
         outcome: "pushed",
       });
       winnerRecipientId = c.recipientId;
@@ -127,6 +132,8 @@ export async function routeBooking(args: {
         score: c.score,
         distanceKm: c.distanceKm,
         receiveFeePence: c.fee.receiveFeePence,
+        acceptanceRate: c.acceptanceRate,
+        reliabilityPenaltyApplied: c.reliabilityPenaltyApplied,
         outcome: /401|403|auth/i.test(msg) ? "error_auth" : "error_other",
         error: msg.slice(0, 200),
       });
@@ -195,7 +202,16 @@ export type RankedCandidate = {
   recipientId: string;
   fee: FeeSnapshot;
   distanceKm: number | null;
-  score: number; // lower = better
+  /** Acceptance rate over last 7d. null = not enough data yet. */
+  acceptanceRate: number | null;
+  /** Sample size behind the rate. */
+  totalPushed7d: number | null;
+  /** Reliability term added to the score (0 if no penalty applied). */
+  reliabilityPenaltyApplied: number;
+  /** Score breakdown — useful for trace UI. */
+  feeTerm: number;
+  distanceTerm: number;
+  score: number; // lower = better, sum of feeTerm + distanceTerm + reliabilityPenaltyApplied
 };
 
 export async function rankCandidates(
@@ -214,9 +230,23 @@ export async function rankCandidates(
           : null;
       // Partners without geo set get a neutral 25km — fee dominates for them.
       const effectiveDistance = distanceKm ?? 25;
-      const score =
-        fee.receiveFeePence * FEE_PER_PENCE_WEIGHT + effectiveDistance * DISTANCE_KM_WEIGHT;
-      return { recipientId: p.id, fee, distanceKm, score };
+
+      const feeTerm = fee.receiveFeePence * FEE_PER_PENCE_WEIGHT;
+      const distanceTerm = effectiveDistance * DISTANCE_KM_WEIGHT;
+      const reliabilityPenaltyApplied = reliabilityPenalty(p.acceptanceRate, p.totalPushed7d);
+      const score = feeTerm + distanceTerm + reliabilityPenaltyApplied;
+
+      return {
+        recipientId: p.id,
+        fee,
+        distanceKm,
+        acceptanceRate: p.acceptanceRate,
+        totalPushed7d: p.totalPushed7d,
+        reliabilityPenaltyApplied,
+        feeTerm,
+        distanceTerm,
+        score,
+      };
     }),
   );
 
@@ -229,6 +259,8 @@ type EligiblePartner = {
   centroidLat: number | null;
   centroidLng: number | null;
   serviceRadiusKm: number | null;
+  acceptanceRate: number | null;
+  totalPushed7d: number | null;
 };
 
 async function findEligibleRecipients(
@@ -283,6 +315,8 @@ async function findEligibleRecipients(
       id: p.id,
       centroidLat: p.centroidLat,
       centroidLng: p.centroidLng,
+      acceptanceRate: p.acceptanceRate,
+      totalPushed7d: p.totalPushed7d,
       serviceRadiusKm: p.serviceRadiusKm,
     }));
 }

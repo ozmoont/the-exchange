@@ -96,6 +96,25 @@ export const partners = pgTable("partners", {
   // back to the demand fleet on status events. Default false — most fleets
   // don't need it. Opt-in for corporate / VIP / regulated accounts.
   driverDetailsRequired: boolean("driver_details_required").notNull().default(false),
+  // ---------- reliability metrics (recomputed periodically) ----------
+  // All metrics are over a rolling 7-day window.
+  // Null means "not yet computed" — routing treats these as neutral (no penalty).
+  //
+  // acceptanceRate: fraction of bookings pushed to this fleet that they
+  //   advanced past 'pushed' within the accept window.
+  // completionRate: fraction of accepted bookings that reached 'completed'.
+  // autoRerouteRate: fraction of bookings pushed where the accept window
+  //   expired and we re-routed away from this fleet.
+  // medianAcceptanceMs: milliseconds from 'pushed' to first onward state, p50.
+  // totalPushed7d: denominator for the rates above. Below 5 → metrics are
+  //   too small a sample to be statistically meaningful; routing ignores
+  //   the reliability term until we have enough data.
+  acceptanceRate: real("acceptance_rate"),
+  completionRate: real("completion_rate"),
+  autoRerouteRate: real("auto_reroute_rate"),
+  medianAcceptanceMs: integer("median_acceptance_ms"),
+  totalPushed7d: integer("total_pushed_7d"),
+  metricsUpdatedAt: timestamp("metrics_updated_at"),
   // freeform billing notes — captured during negotiation
   billingNotes: text("billing_notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -288,6 +307,8 @@ export const networkControls = pgTable("network_controls", {
   // periodically so the dashboard feels alive without manual interaction.
   // Stored here for cross-instance cooldown enforcement.
   lastDemoTickAt: timestamp("last_demo_tick_at"),
+  // Last time we recomputed per-partner reliability metrics. 5-min cooldown.
+  lastReliabilityComputeAt: timestamp("last_reliability_compute_at"),
 });
 
 // ---------- auth ----------

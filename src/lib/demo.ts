@@ -72,6 +72,16 @@ export async function maybeTickDemoMode(): Promise<void> {
   } catch (err) {
     console.warn("[demo] reroute check failed:", err instanceof Error ? err.message : err);
   }
+
+  // And periodically recompute per-partner reliability so routing scores
+  // reflect recent behaviour. Has its own 5-min internal cooldown, so calling
+  // it on every 20s tick is cheap.
+  try {
+    const { maybeRecomputeReliability } = await import("@/lib/reliability");
+    await maybeRecomputeReliability();
+  } catch (err) {
+    console.warn("[demo] reliability compute failed:", err instanceof Error ? err.message : err);
+  }
 }
 
 async function tickOnce(): Promise<void> {

@@ -18,6 +18,8 @@ type Attempt = {
   score: number;
   distanceKm: number | null;
   receiveFeePence: number;
+  acceptanceRate?: number | null;
+  reliabilityPenaltyApplied?: number;
   outcome: "pushed" | "error_other" | "error_auth";
   error?: string;
 };
@@ -166,10 +168,25 @@ export function RoutingTrace({
                       : "Adapter error → fell through"}
                   </span>
                 </div>
-                <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
+                <div className="mt-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <Stat label="Distance" value={fmtDistance(a.distanceKm)} />
                   <Stat label="Fee" value={fmtMoney(a.receiveFeePence)} />
-                  <Stat label="Score" value={a.score.toFixed(1)} />
+                  <Stat
+                    label="Accept rate"
+                    value={
+                      a.acceptanceRate == null
+                        ? "—"
+                        : `${(a.acceptanceRate * 100).toFixed(0)}%`
+                    }
+                  />
+                  <Stat
+                    label="Score"
+                    value={
+                      a.reliabilityPenaltyApplied && a.reliabilityPenaltyApplied > 0
+                        ? `${a.score.toFixed(0)} (+${a.reliabilityPenaltyApplied.toFixed(0)} reliability)`
+                        : a.score.toFixed(0)
+                    }
+                  />
                 </div>
                 {a.error && (
                   <p className="mt-2 text-xs text-red-700 font-mono break-words">

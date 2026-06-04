@@ -415,6 +415,7 @@ export default async function DistributionPage({
                 <th className="text-right px-5 py-3 font-semibold">Complete</th>
                 <th className="text-right px-5 py-3 font-semibold">In-flight</th>
                 <th className="text-right px-5 py-3 font-semibold">Failed</th>
+                <th className="text-right px-5 py-3 font-semibold">Accept rate</th>
                 <th className="text-right px-5 py-3 font-semibold">Avg fee</th>
               </tr>
             </thead>
@@ -422,6 +423,13 @@ export default async function DistributionPage({
               {ranked.slice(0, 50).map((b, i) => {
                 const sharePct = (b.wins / totalRouted) * 100;
                 const avgFee = b.wins ? b.totalReceiveFeePence / b.wins : 0;
+                const partner = partnerById.get(b.partnerId);
+                const acceptRate = partner?.acceptanceRate ?? null;
+                const acceptTone =
+                  acceptRate === null ? "text-ink-subtle" :
+                  acceptRate >= 0.85 ? "text-success-fg" :
+                  acceptRate >= 0.65 ? "text-warning-fg" :
+                  "text-red-700";
                 return (
                   <tr key={b.partnerId} className="hover:bg-surface-muted">
                     <td className="px-5 py-3 text-xs text-ink-subtle tabular-nums">{i + 1}</td>
@@ -448,6 +456,9 @@ export default async function DistributionPage({
                     <td className="px-5 py-3 text-right tabular-nums text-success-fg">{b.completed}</td>
                     <td className="px-5 py-3 text-right tabular-nums text-info-fg">{b.inFlight}</td>
                     <td className="px-5 py-3 text-right tabular-nums text-ink-subtle">{b.cancelled}</td>
+                    <td className={`px-5 py-3 text-right tabular-nums ${acceptTone}`}>
+                      {acceptRate === null ? "—" : `${(acceptRate * 100).toFixed(0)}%`}
+                    </td>
                     <td className="px-5 py-3 text-right tabular-nums text-ink-muted">{fmtMoney(Math.round(avgFee))}</td>
                   </tr>
                 );
