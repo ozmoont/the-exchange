@@ -1,12 +1,12 @@
 import { db } from "@/db/client";
-import { partners, partnerRules, transits } from "@/db/schema";
+import { partners, partnerRules, transits, auditLog } from "@/db/schema";
 import { and, count, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { routeBooking } from "@/lib/routing";
 import { InboundWebhookSimulator } from "@/components/inbound-webhook-simulator";
-import { requirePartnerAccess } from "@/lib/auth";
+import { requirePartnerAccess, requirePartnerWrite } from "@/lib/auth";
 import { LiveRefresh } from "@/components/live-refresh";
 import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 
@@ -17,6 +17,54 @@ export const dynamic = "force-dynamic";
  * transits, and (for editors) a "send test booking" form + inbound webhook
  * simulator. Fleet users see a read-only view.
  */
+
+/**
+ * P1-P2: pause-receiving toggle for fleet_admin. Flips participationMode
+ * between send_and_receive ↔ send_only. Distinct from super_admin's full
+ * suspend (which sets status=suspended). Lets a partner pause inbound
+ * traffic during a busy period without leaving the network entirely.
+ *
+ * Audit-logged with before/after participation modes + actor.
+ */
+async function togglePauseReceivingAction(formData: FormData) {
+  "use server";
+  const partnerId = String(formData.get("partnerId") ?? "");
+  if (!partnerId) return;
+  const user = await requirePartnerWrite(partnerId);
+
+  const [partner] = await db.select().from(partners).where(eq(partners.id, partnerId));
+  if (!partner) return;
+
+  const next: typeof partner.participationMode =
+    partner.participationMode === "send_and_receive"
+      ? "send_only"
+      : partner.participationMode === "send_only"
+      ? "send_and_receive"
+      : partner.participationMode; // receive_only / inactive untouched
+
+  if (next === partner.participationMode) {
+    redirect(`/partners/${partnerId}?error=invalid_mode`);
+  }
+
+  await db
+    .update(partners)
+    .set({ participationMode: next, updatedAt: new Date() })
+    .where(eq(partners.id, partnerId));
+
+  await db.insert(auditLog).values({
+    category: "admin",
+    actor: user.role === "super_admin" ? "admin_user" : "admin_user",
+    actorRef: user.email,
+    action: next === "send_only" ? "partner.paused_receiving" : "partner.resumed_receiving",
+    subjectType: "partner",
+    subjectId: partnerId,
+    before: { participationMode: partner.participationMode },
+    after: { participationMode: next },
+  });
+
+  revalidatePath(`/partners/${partnerId}`);
+  redirect(`/partners/${partnerId}?receiving=${next === "send_only" ? "paused" : "resumed"}`);
+}
 
 async function sendTestBookingAction(formData: FormData) {
   "use server";
@@ -83,8 +131,19 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
     .where(eq(partnerRules.recipientId, partner.id));
 
   const outAllowed = new Set(outRules.filter((r) => r.rule === "allow").map((r) => r.other.id));
+  const inAllowed = new Set(inRules.filter((r) => r.rule === "allow").map((r) => r.other.id));
   const mutualPartners = inRules
     .filter((r) => r.rule === "allow" && outAllowed.has(r.other.id))
+    .map((r) => r.other);
+  // Partners we've allowed-out to but who haven't allowed us back (we'd
+  // send to them, they're not yet willing to receive from us).
+  const pendingOutbound = outRules
+    .filter((r) => r.rule === "allow" && !inAllowed.has(r.other.id))
+    .map((r) => r.other);
+  // Partners who've allowed us in but we haven't reciprocated (they'd send
+  // to us; we're not yet willing to take their work).
+  const pendingInbound = inRules
+    .filter((r) => r.rule === "allow" && !outAllowed.has(r.other.id))
     .map((r) => r.other);
 
   const sentJobs = await db
@@ -119,6 +178,34 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
   // ticking the dashboard every 10s and demo mode advancing transits every
   // 20s, these numbers visibly change during a demo.
   const metrics = await computePartnerMetrics(partner.id);
+
+  // P1-P2: earnings + live receiving feed + routing rules view from THIS
+  // partner's perspective. Visible to super_admin always; to the partner's
+  // own fleet users only when they're viewing their own partner.
+  const isViewingOwnPartner =
+    user.role === "super_admin" || user.partnerId === partner.id;
+  const earnings = isViewingOwnPartner ? await computePartnerEarnings(partner.id) : null;
+  const inFlightReceiving = isViewingOwnPartner
+    ? await db
+        .select()
+        .from(transits)
+        .where(
+          and(
+            eq(transits.recipientPartnerId, partner.id),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            inArray(transits.status as any, [
+              "pushed",
+              "accepted",
+              "driver_assigned",
+              "driver_arrived",
+              "en_route",
+              "on_board",
+            ]),
+          ),
+        )
+        .orderBy(desc(transits.createdAt))
+        .limit(10)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -179,6 +266,94 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
           subtitle={metrics.lastActivityAt ? new Date(metrics.lastActivityAt).toLocaleString() : "no transits yet"}
         />
       </div>
+
+      {/* Earnings (P1-P2) — visible to super_admin always, fleet roles only on their own partner */}
+      {isViewingOwnPartner && earnings && (
+        <Section title="Earnings — network fees received">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <EarningsCard
+              label="Last 7 days"
+              value={fmtMoney(earnings.last7d.totalPence)}
+              sub={`${earnings.last7d.count} completed booking${earnings.last7d.count === 1 ? "" : "s"}`}
+            />
+            <EarningsCard
+              label="Last 30 days"
+              value={fmtMoney(earnings.last30d.totalPence)}
+              sub={`${earnings.last30d.count} completed booking${earnings.last30d.count === 1 ? "" : "s"}`}
+            />
+          </div>
+          <p className="mt-3 text-xs text-ink-subtle">
+            Network fee receivable on completed bookings where you were the recipient.
+            Trip-level fees (passenger add-ons) bill separately via your fee config.
+          </p>
+        </Section>
+      )}
+
+      {/* Pause-receiving toggle (P1-P2) — fleet_admin can pause inbound without
+          full suspend. Only show when current mode is send_and_receive or send_only. */}
+      {canEdit &&
+        (partner.participationMode === "send_and_receive" ||
+          partner.participationMode === "send_only") && (
+          <section className="card p-4 bg-warning/30 border border-yellow-200 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-warning-fg font-semibold">
+                Receive bookings from other fleets
+              </p>
+              <p className="text-sm text-ink mt-1">
+                {partner.participationMode === "send_and_receive" ? (
+                  <>
+                    Currently <strong>accepting</strong> inbound bookings from
+                    allow-listed partners.
+                  </>
+                ) : (
+                  <>
+                    Currently <strong>paused</strong> — you can still send to
+                    others, but no inbound bookings will be routed to you.
+                  </>
+                )}
+              </p>
+            </div>
+            <form action={togglePauseReceivingAction}>
+              <input type="hidden" name="partnerId" value={partner.id} />
+              <button
+                type="submit"
+                className={
+                  partner.participationMode === "send_and_receive"
+                    ? "btn-secondary"
+                    : "btn-primary"
+                }
+              >
+                {partner.participationMode === "send_and_receive"
+                  ? "Pause receiving"
+                  : "Resume receiving"}
+              </button>
+            </form>
+          </section>
+        )}
+
+      {/* Live receiving feed (P1-P2) — what's currently coming our way */}
+      {isViewingOwnPartner && inFlightReceiving.length > 0 && (
+        <Section title={`Inbound right now (${inFlightReceiving.length})`}>
+          <ul className="divide-y divide-border">
+            {inFlightReceiving.map((t) => {
+              const bp = (t.bookingPayload ?? {}) as { pickup?: { address?: string }; dropoff?: { address?: string } };
+              return (
+                <li key={t.id} className="py-3 flex items-center justify-between gap-4 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <Link href={`/transits/${t.id}`} className="hover:underline">
+                      <code className="text-xs text-ink-subtle">{t.originatorBookingExternalId}</code>
+                    </Link>
+                    <div className="text-ink-muted text-xs mt-0.5 truncate">
+                      {bp.pickup?.address ?? "?"} → {bp.dropoff?.address ?? "?"}
+                    </div>
+                  </div>
+                  <TransitStatusBadge status={t.status} />
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
 
       {/* Reliability (rolling 7d) — only show when the partner has received at least 1 booking */}
       {partner.totalPushed7d !== null && partner.totalPushed7d > 0 && (
@@ -243,25 +418,75 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
           <KV k="Contact" v={partner.contactEmail ?? "—"} />
         </Section>
 
-        <Section title={`Can route to (${mutualPartners.length})`}>
-          {mutualPartners.length === 0 ? (
-            <p className="text-sm text-ink-muted">
-              No mutual allow rules yet. Visit{" "}
-              <Link href="/rules" className="text-accent hover:underline">Routing</Link>{" "}
-              to set them up — a new fleet won&apos;t route until both sides have an allow rule.
-            </p>
-          ) : (
-            <ul className="space-y-1.5">
-              {mutualPartners.map((p) => (
-                <li key={p.id} className="text-sm">
-                  <Link href={`/partners/${p.id}`} className="text-ink hover:underline">
-                    {p.name}
-                  </Link>{" "}
-                  <span className="text-xs text-ink-subtle">({p.kind.replace("_", " ")})</span>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Section title={`Network connections`}>
+          <div className="space-y-4 text-sm">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-success-fg font-semibold mb-1.5 flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                Active ({mutualPartners.length}) — mutual allow, ready to route
+              </div>
+              {mutualPartners.length === 0 ? (
+                <p className="text-xs text-ink-muted">
+                  No mutual allow rules yet. Visit{" "}
+                  <Link href="/rules" className="text-accent hover:underline">Routing</Link>{" "}
+                  to set them up — a new fleet won&apos;t route until both sides have an allow rule.
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {mutualPartners.map((p) => (
+                    <li key={p.id} className="text-sm">
+                      <Link href={`/partners/${p.id}`} className="text-ink hover:underline">
+                        {p.name}
+                      </Link>{" "}
+                      <span className="text-xs text-ink-subtle">({p.kind.replace("_", " ")})</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {pendingOutbound.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-warning-fg font-semibold mb-1.5 flex items-center gap-2">
+                  <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+                  Waiting on them ({pendingOutbound.length}) — you allow, they haven&apos;t
+                </div>
+                <ul className="space-y-1">
+                  {pendingOutbound.slice(0, 10).map((p) => (
+                    <li key={p.id} className="text-sm">
+                      <Link href={`/partners/${p.id}`} className="text-ink hover:underline">
+                        {p.name}
+                      </Link>
+                    </li>
+                  ))}
+                  {pendingOutbound.length > 10 && (
+                    <li className="text-xs text-ink-subtle">+ {pendingOutbound.length - 10} more</li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {pendingInbound.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-info-fg font-semibold mb-1.5 flex items-center gap-2">
+                  <span className="inline-block h-2 w-2 rounded-full bg-sky-500" />
+                  Waiting on you ({pendingInbound.length}) — they allow, you haven&apos;t
+                </div>
+                <ul className="space-y-1">
+                  {pendingInbound.slice(0, 10).map((p) => (
+                    <li key={p.id} className="text-sm">
+                      <Link href={`/partners/${p.id}`} className="text-ink hover:underline">
+                        {p.name}
+                      </Link>
+                    </li>
+                  ))}
+                  {pendingInbound.length > 10 && (
+                    <li className="text-xs text-ink-subtle">+ {pendingInbound.length - 10} more</li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
         </Section>
       </div>
 
@@ -551,6 +776,64 @@ async function computePartnerMetrics(partnerId: string): Promise<PartnerMetrics>
   return { inFlight, completed24h, total24h, successRate, lastActivityAt, lastActivityAgo };
 }
 
+// ---------------------------------------------------------------------------
+// Earnings (P1-P2)
+// ---------------------------------------------------------------------------
+//
+// Sum of receive_fee + tech_fee + booking_fee + admin_fee + computed passenger
+// add-ons from completed transits where this partner was recipient. Computed
+// over the last 7d and 30d for headline display. Detail page will eventually
+// link to a full earnings statement (P1-P3 billing scaffolding).
+
+type EarningsBreakdown = {
+  count: number;
+  totalPence: number;
+};
+
+type PartnerEarnings = {
+  last7d: EarningsBreakdown;
+  last30d: EarningsBreakdown;
+};
+
+async function computePartnerEarnings(partnerId: string): Promise<PartnerEarnings> {
+  const now = Date.now();
+  const since7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
+  const since30d = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
+  async function aggregateSince(since: Date): Promise<EarningsBreakdown> {
+    const rows = await db
+      .select({
+        feeSnapshot: transits.feeSnapshot,
+      })
+      .from(transits)
+      .where(
+        and(
+          eq(transits.recipientPartnerId, partnerId),
+          eq(transits.status, "completed"),
+          gte(transits.createdAt, since),
+        ),
+      );
+
+    let totalPence = 0;
+    for (const row of rows) {
+      const fs = row.feeSnapshot;
+      if (!fs) continue;
+      // Receive fee is what we charge the receiving fleet for the network
+      // routing. Tech / booking / admin fees travel with the passenger fare
+      // and are passenger-side. The "earnings" headline shows the recipient
+      // their net network fee (receive). For total revenue, add the others.
+      totalPence += fs.receiveFeePence ?? 0;
+    }
+    return { count: rows.length, totalPence };
+  }
+
+  const [last7d, last30d] = await Promise.all([
+    aggregateSince(since7d),
+    aggregateSince(since30d),
+  ]);
+  return { last7d, last30d };
+}
+
 function relativeTimeAgo(d: Date): string {
   const sec = Math.floor((Date.now() - d.getTime()) / 1000);
   if (sec < 60) return `${sec}s ago`;
@@ -583,6 +866,30 @@ function MetricCard({
       {subtitle && <div className="text-xs text-ink-muted mt-1">{subtitle}</div>}
     </div>
   );
+}
+
+function EarningsCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="card p-4 border-l-4 border-green-500">
+      <div className="text-xs uppercase tracking-wide text-ink-subtle font-semibold">{label}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums text-success-fg">{value}</div>
+      <div className="mt-1 text-xs text-ink-muted">{sub}</div>
+    </div>
+  );
+}
+
+function fmtMoney(pence: number): string {
+  if (pence === 0) return "£0.00";
+  if (pence < 100) return `${pence}p`;
+  return `£${(pence / 100).toFixed(2)}`;
 }
 
 function ReliabilityCard({
