@@ -11,6 +11,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { resolveFeeSnapshot } from "./fees";
 import { getAdapterForPartner } from "@/adapters/registry";
 import { reliabilityPenalty } from "./reliability";
+import { captureError } from "./observability";
 import type { NormalisedBooking } from "./types";
 import type { FeeSnapshot } from "@/db/schema";
 
@@ -493,10 +494,7 @@ export async function setKillSwitch(
     } catch (err) {
       // Don't fail the kill-switch toggle if resume blows up. Log the error
       // and the admin can manually resume via the upcoming admin button.
-      console.error(
-        "[kill_switch.off] resume failed:",
-        err instanceof Error ? err.message : err,
-      );
+      captureError(err, { area: "kill_switch_off_resume" });
     }
   }
 
@@ -620,10 +618,7 @@ export async function processReceivedTransits(
       outcomes[result.outcome]++;
     } catch (err) {
       outcomes.error++;
-      console.error(
-        `[process-queue] transit ${t.id} failed:`,
-        err instanceof Error ? err.message : err,
-      );
+      captureError(err, { area: "process_queue", transit_id: t.id });
     }
   }
 

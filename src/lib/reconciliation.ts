@@ -22,6 +22,7 @@ import { db } from "@/db/client";
 import { transits, networkControls, auditLog } from "@/db/schema";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { getAdapterForPartner } from "@/adapters/registry";
+import { captureError } from "@/lib/observability";
 
 const COOLDOWN_MS = 60 * 60_000;      // 1 hour
 const DRIFT_THRESHOLD_PCT = 0.05;     // 5% of the feeSnapshot total
@@ -134,10 +135,7 @@ export async function reconcileCompletedTransits(): Promise<ReconciliationOutcom
       outcome.reconciled++;
     } catch (err) {
       outcome.error++;
-      console.error(
-        `[reconciliation] transit ${t.id} failed:`,
-        err instanceof Error ? err.message : err,
-      );
+      captureError(err, { area: "reconciliation", transit_id: t.id });
     }
   }
 
@@ -167,10 +165,7 @@ export async function maybeReconcileCompletedTransits(): Promise<void> {
       );
     }
   } catch (err) {
-    console.warn(
-      "[reconciliation] run failed:",
-      err instanceof Error ? err.message : err,
-    );
+    captureError(err, { area: "reconciliation_run" });
   }
 }
 

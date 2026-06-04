@@ -29,6 +29,8 @@ import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { getAdapterForPartner } from "@/adapters/registry";
 import { rankCandidates, acceptDeadlineFor, forwardStatusUpdate, routeBooking } from "@/lib/routing";
 import { resolveFeeSnapshot } from "@/lib/fees";
+import { captureError } from "@/lib/observability";
+import { log } from "@/lib/logger";
 import type { NormalisedBooking } from "@/lib/types";
 import type { FeeSnapshot } from "@/db/schema";
 
@@ -101,10 +103,10 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
     } catch (cancelErr) {
       // The recipient might be down. Carry on — they can clean up locally if/when
       // they come back. We've already moved the booking off their side.
-      console.warn(
-        `[reroute] cancel-on-original failed for transit=${t.id}:`,
-        cancelErr instanceof Error ? cancelErr.message : cancelErr,
-      );
+      log.warn("reroute cancel-on-original failed", {
+        transit_id: t.id,
+        err: cancelErr instanceof Error ? cancelErr.message : String(cancelErr),
+      });
     }
   }
 
@@ -277,10 +279,10 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
       occurred_at: new Date().toISOString(),
     });
   } catch (err) {
-    console.warn(
-      `[reroute] outbound event for transit ${t.id} failed:`,
-      err instanceof Error ? err.message : err,
-    );
+    log.warn("reroute outbound event failed", {
+      transit_id: t.id,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 
   return { transitId: t.id, outcome: "rerouted", newRecipientId: next.recipientId };
@@ -347,10 +349,7 @@ export async function resumePausedTransits(actor: string): Promise<ResumeOutcome
       });
     } catch (err) {
       outcomes.error++;
-      console.error(
-        `[resume] transit ${t.id} failed:`,
-        err instanceof Error ? err.message : err,
-      );
+      captureError(err, { area: "resume_paused", transit_id: t.id });
     }
   }
 

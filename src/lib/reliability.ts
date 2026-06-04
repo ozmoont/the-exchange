@@ -25,6 +25,7 @@
 import { db } from "@/db/client";
 import { partners, transits, transitEvents, networkControls } from "@/db/schema";
 import { and, eq, gte, sql } from "drizzle-orm";
+import { captureError } from "@/lib/observability";
 
 const WINDOW_DAYS = 7;
 const COMPUTE_COOLDOWN_MS = 5 * 60_000;
@@ -182,10 +183,7 @@ export async function maybeRecomputeReliability(): Promise<void> {
       );
     }
   } catch (err) {
-    console.warn(
-      "[reliability] recompute / threshold check failed:",
-      err instanceof Error ? err.message : err,
-    );
+    captureError(err, { area: "reliability_recompute" });
   }
 }
 
