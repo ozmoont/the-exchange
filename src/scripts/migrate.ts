@@ -26,6 +26,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 async function main() {
@@ -53,6 +54,21 @@ async function main() {
   // The migrations folder lives at drizzle/ relative to the project root.
   // drizzle-kit generate writes versioned .sql files there.
   const migrationsFolder = resolve(process.cwd(), "drizzle");
+
+  // drizzle-orm/migrator needs drizzle/meta/_journal.json to exist. Until
+  // the first `pnpm db:generate` has been run, the folder is empty and
+  // migrate() would throw "Can't find meta/_journal.json". Treat that as
+  // "no migrations yet" — success — so the build pipeline doesn't fail
+  // before any migration is even written.
+  const journalPath = resolve(migrationsFolder, "meta", "_journal.json");
+  if (!existsSync(journalPath)) {
+    console.log(
+      `[migrate] No migrations to apply (${journalPath} not found). ` +
+        `Run \`pnpm db:generate\` to create the first migration.`,
+    );
+    return;
+  }
+
   console.log(`[migrate] Applying migrations from ${migrationsFolder}`);
   console.log(`[migrate] Target: ${redact(databaseUrl)}`);
 
