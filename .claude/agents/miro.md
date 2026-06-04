@@ -52,4 +52,4 @@ If the implementation contradicts the spec, stop, surface it clearly to the call
 1. `docs/TEST_STRATEGY.md` — your own plan
 2. `AGENTS.md` — repo-wide conventions, including the Next.js docs-first rule
 3. `TEAM.md` — who else is on this
-4. The spec (from Andy) and the implementation (from Mykola)
+4. The spec (from Franko) and the implementation (from Mykola)

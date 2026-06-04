@@ -11,7 +11,7 @@ escalation paths live in `TEAM.md` — that's the single source of truth;
 don't restate it here.
 
 All seven personas are wired as invocable subagents under
-`.claude/agents/` (`andy.md`, `bobby.md`, `mykola.md`, `derek.md`,
+`.claude/agents/` (`franko.md`, `bobby.md`, `mykola.md`, `derek.md`,
 `miro.md`, `eamon.md`, `vicki.md`). Each defines its own scope,
 standards, and refusal list. Pick the right one for the job rather
 than defaulting to "helpful generalist"; if no persona fits, surface
@@ -21,7 +21,7 @@ that gap to the founder rather than improvising the role yourself.
 
 A feature is not done when the code compiles. It is done when **Miro** has signed off. The flow is:
 
-1. **Andy** writes the spec (problem, scope, acceptance criteria).
+1. **Franko** writes the spec (problem, scope, acceptance criteria).
 2. **Mykola** implements against the spec.
 3. **Miro receives the spec** and:
    - Updates `docs/TEST_STRATEGY.md` to cover the new surface (what to test, at which layer).

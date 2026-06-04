@@ -1,6 +1,6 @@
 # The Exchange — Strategy
 
-> **Source of truth for product scope.** Andy, Bobby, and Vicki anchor against this doc. Treat Section 1 (Locked Decisions) as **locked** — to change anything in it, surface to the founder before re-scoping.
+> **Source of truth for product scope.** Franko, Bobby, and Vicki anchor against this doc. Treat Section 1 (Locked Decisions) as **locked** — to change anything in it, surface to the founder before re-scoping.
 
 ## 1. Locked decisions
 
@@ -30,7 +30,7 @@
 
 ## 2. Explicitly out of scope
 
-These are NOT in the MVP. If a request fits one of these categories, Andy rejects or defers — surface to the founder if there's commercial pressure to include:
+These are NOT in the MVP. If a request fits one of these categories, Franko rejects or defers — surface to the founder if there's commercial pressure to include:
 
 - **Pre-booking aggregation** (fan-out availability/quote/ETA queries to multiple partners and merge). iCabbi already does pre-booking; we pass through.
 - **Odoo billing settlement.** Ledger emits events; downstream system reconciles.
@@ -60,7 +60,7 @@ These are NOT in the MVP. If a request fits one of these categories, Andy reject
 | **H3 — Fee config UI + Auth** | After H2 | Replace seed-only fees with admin UI under `/fees`. Wrap portal with Auth.js. |
 | **H4 — Production hardening** | Pre-launch | Rate limits, monitoring, signed webhooks, secret rotation, rollback runbook. |
 
-> Andy: if a request fits an open horizon, write the spec. If it fits a future horizon, defer with a one-line note. If it fits no horizon, recommend reject.
+> Franko: if a request fits an open horizon, write the spec. If it fits a future horizon, defer with a one-line note. If it fits no horizon, recommend reject.
 
 ## 5. Risks we've already named (don't re-litigate without new info)
 

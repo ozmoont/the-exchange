@@ -4,7 +4,7 @@
 
 ## Spec
 
-<!-- Link to docs/specs/<slug>.md (written by Andy). If no spec, explain why. -->
+<!-- Link to docs/specs/<slug>.md (written by Franko). If no spec, explain why. -->
 
 ## Implementation notes
 

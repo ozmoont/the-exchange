@@ -14,7 +14,7 @@
 - **First paying customer with SLA**: Week 14 (2026-09-05)
 - **Total elapsed**: 12 weeks engineering + 2 weeks pilot stabilisation
 
-This plan assumes the AI persona team (Andy/Bobby/Mykola/Miro/Derek/Eamon/Vicki) executes engineering, with OG owning all external human stakeholders (legal counsel, pen tester, iCabbi commercial team, pilot fleet operators, insurance broker, bookkeeper). If a paid contract backend engineer joins by Week 2, the timeline compresses by ~3 weeks; defer that decision to the kickoff.
+This plan assumes the AI persona team (Franko/Bobby/Mykola/Miro/Derek/Eamon/Vicki) executes engineering, with OG owning all external human stakeholders (legal counsel, pen tester, iCabbi commercial team, pilot fleet operators, insurance broker, bookkeeper). If a paid contract backend engineer joins by Week 2, the timeline compresses by ~3 weeks; defer that decision to the kickoff.
 
 ---
 
@@ -46,7 +46,7 @@ Decisions logged in `docs/decisions/2026-06-02-kickoff.md` immediately after.
 
 ## Sprint cadence
 
-- **Mon 09:30** — Sprint planning. Pick items from the plan, write specs (Andy) for anything ambiguous.
+- **Mon 09:30** — Sprint planning. Pick items from the plan, write specs (Franko) for anything ambiguous.
 - **Daily 09:30** — Standup: yesterday / today / blocked. Five minutes hard cap.
 - **Wed 14:00** — Mid-sprint check. If we're behind, descope now, not Friday.
 - **Fri 16:00** — Sprint review. Miro signs off on done items per DoD. Anything not signed off rolls to next sprint with an explicit note.
@@ -62,9 +62,9 @@ Goal: nothing in production runs without auth and we see every error.
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P0-1 | Auth lockdown + super-admin 2FA | Mykola | Andy | DISABLE_AUTH guard; TOTP enrolment for super_admin; session expiry tuned | Miro |
+| P0-1 | Auth lockdown + super-admin 2FA | Mykola | Franko | DISABLE_AUTH guard; TOTP enrolment for super_admin; session expiry tuned | Miro |
 | P0-6 | Sentry + structured logging | Mykola | — | All unhandled errors → Sentry; pino logger; request_id propagated | Miro |
-| P0-1.5 | Runtime production safety assertion | Eamon | Andy | Boot-time check: `NODE_ENV=production && DISABLE_AUTH=true` throws | Miro |
+| P0-1.5 | Runtime production safety assertion | Eamon | Franko | Boot-time check: `NODE_ENV=production && DISABLE_AUTH=true` throws | Miro |
 
 OG in parallel:
 
@@ -83,9 +83,9 @@ Goal: production schema changes are reversible and we cannot be DOSed.
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P0-2 | Drizzle migrations (replace `push`) | Eamon | Andy | `drizzle/migrations/` committed; CI runs migrations pre-deploy | Miro |
-| P0-4 | Rate limiting (Upstash) | Mykola | Andy | All webhook + auth + admin write routes rate-limited; 429s include `Retry-After` | Miro |
-| P0-5 | Webhook replay protection | Mykola | Andy | `sent_at` window + event-id dedup table; replays return 409 | Miro |
+| P0-2 | Drizzle migrations (replace `push`) | Eamon | Franko | `drizzle/migrations/` committed; CI runs migrations pre-deploy | Miro |
+| P0-4 | Rate limiting (Upstash) | Mykola | Franko | All webhook + auth + admin write routes rate-limited; 429s include `Retry-After` | Miro |
+| P0-5 | Webhook replay protection | Mykola | Franko | `sent_at` window + event-id dedup table; replays return 409 | Miro |
 
 OG in parallel:
 
@@ -102,9 +102,9 @@ Goal: routing moves off the request path.
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P0-3a | Pick queue technology | Bobby | Andy | ADR in `docs/architecture/` choosing Inngest vs pg-boss vs Trigger | OG (sign-off on cost / vendor lock-in) |
+| P0-3a | Pick queue technology | Bobby | Franko | ADR in `docs/architecture/` choosing Inngest vs pg-boss vs Trigger | OG (sign-off on cost / vendor lock-in) |
 | P0-3b | Receive → enqueue → ack 200 (just inbound) | Mykola | Bobby | Webhook returns 202 in <100ms; job lands on queue; existing sync code still runs as fallback | Miro |
-| P0-7 | Backup restore drill | Eamon | Andy | Neon point-in-time restore tested; procedure in `docs/RUNBOOK.md` | Miro |
+| P0-7 | Backup restore drill | Eamon | Franko | Neon point-in-time restore tested; procedure in `docs/RUNBOOK.md` | Miro |
 
 OG in parallel:
 
@@ -123,7 +123,7 @@ Goal: routing fully off the request path; secret rotation procedure exists.
 | --- | --- | --- | --- | --- | --- |
 | P0-3c | Worker dequeues + routes + emits status webhook back | Mykola | Bobby | Full async path live behind feature flag; sync fallback still exists | Miro |
 | P0-3d | Outbound webhook delivery async with retry | Mykola | Bobby | Failed deliveries land in `webhook_deliveries` with retry budget; existing inspector page surfaces them | Miro |
-| P0-8 | Secret rotation runbook + dry-run | Eamon | Andy | `PARTNER_CREDENTIAL_KEY` rotation script tested on Neon branch | Miro |
+| P0-8 | Secret rotation runbook + dry-run | Eamon | Franko | `PARTNER_CREDENTIAL_KEY` rotation script tested on Neon branch | Miro |
 
 OG in parallel:
 
@@ -140,9 +140,9 @@ Goal: bookings that aren't accepted re-route automatically; legal scaffolding re
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P1-E1 | Acceptance window + auto-reroute | Mykola | Andy | 90s ASAP / 5min pre-book window; scheduled job re-routes; new transit status `re_routed` | Miro |
+| P1-E1 | Acceptance window + auto-reroute | Mykola | Franko | 90s ASAP / 5min pre-book window; scheduled job re-routes; new transit status `re_routed` | Miro |
 | P1-S1 | DPA template finalised | OG + counsel | OG | Executable DPA in `docs/legal/` | OG |
-| P1-S2 | Privacy policy + terms draft | Vicki + counsel | Andy | Drafts ready for legal review | OG |
+| P1-S2 | Privacy policy + terms draft | Vicki + counsel | Franko | Drafts ready for legal review | OG |
 
 OG in parallel:
 
@@ -160,7 +160,7 @@ Goal: routing prefers reliable partners; new partners can self-onboard.
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
 | P1-E2 | Reliability scoring in routing | Mykola | Bobby | Nightly job computes per-partner reliability; score factored into routing; below-floor auto-suspends | Miro |
-| P1-P1 | Self-service signup flow | Mykola + Derek | Andy | `/signup` page; admin review queue; on-approval magic link to credential setup; Vicki writes welcome email copy | Miro |
+| P1-P1 | Self-service signup flow | Mykola + Derek | Franko | `/signup` page; admin review queue; on-approval magic link to credential setup; Vicki writes welcome email copy | Miro |
 
 OG in parallel:
 
@@ -176,7 +176,7 @@ Goal: every code path is replay-safe; pilot fleet has a usable partner-side dash
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
 | P1-E3 | Idempotency hardening | Mykola | Bobby | iCabbi adapter idempotent on external id; webhook handlers dedupe on event id; property test for fee determinism | Miro |
-| P1-P2 | Partner-side dashboard polish | Mykola + Derek | Andy | Live receiving jobs view; earnings statement; pause toggle; routing rules view | Miro |
+| P1-P2 | Partner-side dashboard polish | Mykola + Derek | Franko | Live receiving jobs view; earnings statement; pause toggle; routing rules view | Miro |
 | P1-E4 | iCabbi sandbox nightly integration test | Eamon | Mykola | Cron job runs real round-trip nightly; failures wake on-call | Miro |
 
 OG in parallel:
@@ -193,8 +193,8 @@ Goal: external security review executes. Engineering quiet week — defensive on
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
 | External | Pen test executes (Mon–Fri) | External tester | — | Report delivered Friday | OG |
-| P1-S3 | PII minimisation audit | Mykola | Andy | All log statements reviewed; retention policy doc | Miro |
-| P1-S3.5 | Anonymisation cron job | Mykola | Andy | 90-day cutoff; replace name/phone with hash | Miro |
+| P1-S3 | PII minimisation audit | Mykola | Franko | All log statements reviewed; retention policy doc | Miro |
+| P1-S3.5 | Anonymisation cron job | Mykola | Franko | 90-day cutoff; replace name/phone with hash | Miro |
 
 OG in parallel:
 
@@ -213,7 +213,7 @@ Goal: every High and Critical pen test finding fixed; billing infrastructure beg
 | --- | --- | --- | --- | --- | --- |
 | External | Triage pen test findings | Bobby + Mykola | Bobby | Every finding ranked + assigned + dated | OG |
 | External | Remediate all Critical + High | Mykola | Bobby | Each closed with a commit referencing the finding ID | Miro |
-| P1-P3a | Billing data model + line generation | Mykola | Andy | Daily aggregate of completed transits per partner per period | Miro |
+| P1-P3a | Billing data model + line generation | Mykola | Franko | Daily aggregate of completed transits per partner per period | Miro |
 
 OG in parallel:
 
@@ -229,9 +229,9 @@ Goal: we can invoice; we can communicate during incidents.
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P1-P3b | Stripe Billing wired up | Mykola | Andy | Test invoice generated for pilot partner; preview UI for finance | Miro |
-| P1-O1 | Status page live | Eamon | Andy | Public page with 4 components; linked from login | Miro |
-| P1-O3 | Runbook complete | Eamon + Bobby | Andy | All 7 scenarios in `docs/RUNBOOK.md` with copy-paste commands | Miro |
+| P1-P3b | Stripe Billing wired up | Mykola | Franko | Test invoice generated for pilot partner; preview UI for finance | Miro |
+| P1-O1 | Status page live | Eamon | Franko | Public page with 4 components; linked from login | Miro |
+| P1-O3 | Runbook complete | Eamon + Bobby | Franko | All 7 scenarios in `docs/RUNBOOK.md` with copy-paste commands | Miro |
 | P1-O2 | On-call rotation + paging | Eamon | OG | Better Stack or PagerDuty configured; severity defs in runbook | OG |
 
 OG in parallel:
@@ -247,7 +247,7 @@ Goal: every go/no-go gate is green except the final sign-off.
 
 | ID | Item | Owner persona | Spec by | Deliverable | DoD signed by |
 | --- | --- | --- | --- | --- | --- |
-| P1-O4 | Synthetic monitoring | Eamon | Andy | Hourly test booking through smoke pair; failures page on-call | Miro |
+| P1-O4 | Synthetic monitoring | Eamon | Franko | Hourly test booking through smoke pair; failures page on-call | Miro |
 | External | DR drill (full) | Eamon | OG | Restore from backup, route traffic to restored stack, document gaps | OG |
 | P1-E5 | Connection pool + index pass | Mykola | Bobby | Indices added; pool sized; EXPLAIN ANALYZE on top 10 queries; results in `docs/performance.md` | Miro |
 | Review | Final security review | Bobby | — | All P0 items re-verified post-pen-test | OG |
@@ -306,8 +306,8 @@ This document is updated weekly post-pilot until we hit 5 partners stable, at wh
 
 ## Personas — what they actually do this quarter
 
-- **Andy (PO)** writes the spec for every item before Mykola starts. Andy refuses to let Mykola begin without a spec. Every spec ends with acceptance criteria Miro will check.
-- **Mykola (Eng)** implements. Doesn't introduce dependencies without Bobby's nod. Asks Andy when the spec is ambiguous, asks Bobby when the spec contradicts existing patterns.
+- **Franko (PO)** writes the spec for every item before Mykola starts. Franko refuses to let Mykola begin without a spec. Every spec ends with acceptance criteria Miro will check.
+- **Mykola (Eng)** implements. Doesn't introduce dependencies without Bobby's nod. Asks Franko when the spec is ambiguous, asks Bobby when the spec contradicts existing patterns.
 - **Bobby (Tech Lead)** owns ADRs for P0-3 queue choice, reliability scoring algorithm, idempotency model. On call for hard bugs.
 - **Miro (QA)** signs every DoD. The Friday review is Miro's hour — anything not signed off rolls. Owns the regression test suite.
 - **Derek (Design)** reviews every UI-touching PR. Owns partner-side dashboard polish (Sprint 7) and signup flow visual design (Sprint 6).
