@@ -304,6 +304,35 @@ export const auditLog = pgTable("audit_log", {
   createdAtIdx: index("audit_log_created_at_idx").on(t.createdAt),
 }));
 
+// ---------- synthetic test runs (P1-O4) ----------
+//
+// Every hour the synthetic cron fires a test booking through the routing
+// engine. Results land here so the dashboard can show "last synthetic: 4
+// min ago — pushed (1.2s)" and we can alert on a failing trend.
+//
+// Outcome values mirror the routing outcomes plus 'timeout' for cases where
+// the cron itself didn't finish (>30s expected to indicate a stuck system).
+//
+// Synthetic transits are tagged via bookingPayload.raw.synthetic=true and
+// filtered out of default /bookings and /distribution views — see the
+// `synthetic=true` query-param toggle.
+
+export const syntheticTestRuns = pgTable(
+  "synthetic_test_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ranAt: timestamp("ran_at").notNull().defaultNow(),
+    outcome: text("outcome").notNull(), // 'pushed' | 'no_match' | 'paused' | 'error' | 'timeout' | 'skipped_no_pair'
+    transitId: uuid("transit_id"),
+    originatorPartnerId: uuid("originator_partner_id"),
+    elapsedMs: integer("elapsed_ms").notNull(),
+    errorMessage: text("error_message"),
+  },
+  (t) => ({
+    ranAtIdx: index("synthetic_test_runs_ran_at_idx").on(t.ranAt),
+  }),
+);
+
 // ---------- rate-limit buckets ----------
 //
 // Fixed-window counter, 1 row per (key, window_start). Each request that

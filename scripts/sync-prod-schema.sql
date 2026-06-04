@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS rate_limit_buckets (
 );
 CREATE INDEX IF NOT EXISTS rate_limit_window_idx ON rate_limit_buckets (window_start);
 
+-- ---------- synthetic_test_runs (P1-O4 synthetic monitoring) ----------
+CREATE TABLE IF NOT EXISTS synthetic_test_runs (
+  id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ran_at                   timestamp NOT NULL DEFAULT now(),
+  outcome                  text NOT NULL,
+  transit_id               uuid,
+  originator_partner_id    uuid,
+  elapsed_ms               integer NOT NULL,
+  error_message            text
+);
+CREATE INDEX IF NOT EXISTS synthetic_test_runs_ran_at_idx ON synthetic_test_runs (ran_at);
+
 COMMIT;
 
 -- Confirm we have everything

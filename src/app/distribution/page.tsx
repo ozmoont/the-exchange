@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { transits, partners } from "@/db/schema";
+import { transits, partners, syntheticTestRuns } from "@/db/schema";
 import { desc, sql } from "drizzle-orm";
 import { requireSuperAdmin } from "@/lib/auth";
 import { LiveRefresh } from "@/components/live-refresh";
@@ -64,9 +64,12 @@ export default async function DistributionPage({
     : null;
 
   // Recent bookings — ordered, capped
+  // Exclude synthetic monitor transits (SYNTH-*) from the distribution
+  // window so the hourly P1-O4 traffic doesn't pollute real partner stats.
   const rows = await db
     .select()
     .from(transits)
+    .where(sql`${transits.originatorBookingExternalId} NOT LIKE 'SYNTH-%'`)
     .orderBy(desc(transits.createdAt))
     .limit(windowSize);
 
@@ -324,6 +327,9 @@ export default async function DistributionPage({
         />
       </div>
 
+      {/* Synthetic monitor — most recent run status */}
+      <SyntheticMonitorWidget />
+
       {/* UK coverage map */}
       <UKCoverageMap fleets={mapFleets} pickups={pickups.slice(0, 500)} />
 
@@ -491,6 +497,90 @@ pnpm fire-jobs --count 500`}
       <span className="hidden">
         <span className={statusBadgeClass("pushed")}>{statusLabel("pushed")}</span>
       </span>
+    </div>
+  );
+}
+
+/**
+ * Synthetic monitor widget — shows the most recent synthetic test run on
+ * /distribution so a glance at the dashboard tells you whether the happy
+ * path is alive. Traffic-light colour by outcome.
+ *
+ * Async server component — renders nothing if there's never been a run.
+ */
+async function SyntheticMonitorWidget() {
+  const [latest] = await db
+    .select()
+    .from(syntheticTestRuns)
+    .orderBy(desc(syntheticTestRuns.ranAt))
+    .limit(1);
+
+  if (!latest) {
+    return (
+      <div className="card p-4 border-l-4 border-l-amber-400 flex items-center justify-between gap-4 flex-wrap text-sm">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-warning-fg font-semibold">
+            Synthetic monitor
+          </p>
+          <p className="mt-1 text-ink-muted">
+            Never run. Trigger via{" "}
+            <code className="text-xs">/api/cron/synthetic-test</code> or wait for the hourly cron.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Older than 90 min → cron stopped. Anything older than 65 min is suspect.
+  const ageMs = Date.now() - new Date(latest.ranAt).getTime();
+  const isStale = ageMs > 90 * 60_000;
+  const isAlmostStale = !isStale && ageMs > 65 * 60_000;
+  const okOutcome = latest.outcome === "pushed";
+
+  const tone =
+    isStale || latest.outcome === "error" || latest.outcome === "timeout"
+      ? "border-l-red-500 bg-danger/20"
+      : !okOutcome || isAlmostStale
+      ? "border-l-amber-500 bg-warning/30"
+      : "border-l-green-500 bg-success/30";
+
+  const ageLabel = ageMs < 60_000
+    ? `${Math.round(ageMs / 1000)}s ago`
+    : ageMs < 60 * 60_000
+    ? `${Math.round(ageMs / 60_000)}m ago`
+    : `${Math.round(ageMs / 60 / 60_000)}h ago`;
+
+  return (
+    <div className={`card p-4 border-l-4 ${tone} flex items-center justify-between gap-4 flex-wrap text-sm`}>
+      <div>
+        <p className="text-xs uppercase tracking-wide text-ink-subtle font-semibold">
+          Synthetic monitor — last run
+        </p>
+        <p className="mt-1">
+          <strong>{latest.outcome}</strong>
+          {latest.elapsedMs > 0 && (
+            <span className="text-ink-muted"> in {(latest.elapsedMs / 1000).toFixed(2)}s</span>
+          )}
+          {" · "}
+          <span className="text-ink-muted">{ageLabel}</span>
+          {isStale && (
+            <span className="text-red-700 font-semibold"> · stale, cron may be down</span>
+          )}
+        </p>
+        {latest.errorMessage && (
+          <p className="mt-1 text-xs font-mono text-red-700 break-words max-w-2xl">
+            {latest.errorMessage.slice(0, 200)}
+          </p>
+        )}
+      </div>
+      {latest.transitId && (
+        <Link
+          href={`/transits/${latest.transitId}?synthetic=1`}
+          className="text-xs text-ink hover:underline font-medium"
+        >
+          Inspect transit →
+        </Link>
+      )}
     </div>
   );
 }

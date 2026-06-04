@@ -41,7 +41,13 @@ type DriverDetail = {
 export default async function BookingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ highlight?: string; outcome?: string; status?: string; group?: string }>;
+  searchParams: Promise<{
+    highlight?: string;
+    outcome?: string;
+    status?: string;
+    group?: string;
+    synthetic?: string;
+  }>;
 }) {
   const user = await requireUser();
   const sp = await searchParams;
@@ -49,6 +55,7 @@ export default async function BookingsPage({
 
   const filterStatus = sp.status?.trim();
   const filterGroup = sp.group?.trim() as StatusGroup | undefined;
+  const showSynthetic = sp.synthetic === "1";
   const filterStatuses =
     filterStatus
       ? [filterStatus]
@@ -70,8 +77,18 @@ export default async function BookingsPage({
     ? inArray(transits.status as any, filterStatuses)
     : undefined;
 
-  const whereClause =
-    scopedWhere && statusWhere ? and(scopedWhere, statusWhere) : scopedWhere ?? statusWhere;
+  // Hide synthetic monitor transits from the default view — they create
+  // 24/day of test noise. Toggle visible via ?synthetic=1.
+  const syntheticWhere = showSynthetic
+    ? undefined
+    : sql`${transits.originatorBookingExternalId} NOT LIKE 'SYNTH-%'`;
+
+  const whereClause = [scopedWhere, statusWhere, syntheticWhere]
+    .filter((w): w is NonNullable<typeof w> => Boolean(w))
+    .reduce<typeof scopedWhere | undefined>(
+      (acc, w) => (acc ? and(acc, w) : w),
+      undefined,
+    );
 
   const rows = await db
     .select({ t: transits, originator: partners })
@@ -176,6 +193,20 @@ export default async function BookingsPage({
             {filterLabel}
           </span>
         )}
+        <span className="ml-auto">
+          <Link
+            href={`/bookings${
+              (filterGroup ? `?group=${filterGroup}` : filterStatus ? `?status=${filterStatus}` : "")
+            }${showSynthetic ? "" : (filterGroup || filterStatus ? "&" : "?") + "synthetic=1"}`}
+            className={`px-3 py-1.5 rounded-full border text-[11px] ${
+              showSynthetic
+                ? "bg-ink text-surface border-ink"
+                : "border-dashed border-border-strong hover:bg-surface-muted text-ink-muted"
+            }`}
+          >
+            {showSynthetic ? "Synthetic visible" : "Synthetic hidden"}
+          </Link>
+        </span>
       </div>
 
       {outcome && (
