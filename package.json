@@ -16,7 +16,9 @@
     "smoke": "tsx --env-file=.env.local src/scripts/smoke-test.ts",
     "send-webhook": "tsx --env-file=.env.local src/scripts/send-webhook.ts",
     "spawn-fleets": "tsx --env-file=.env.local src/scripts/spawn-fleets.ts",
-    "fire-jobs": "tsx --env-file=.env.local src/scripts/fire-jobs.ts"
+    "fire-jobs": "tsx --env-file=.env.local src/scripts/fire-jobs.ts",
+    "backfill-reliability": "tsx --env-file=.env.local src/scripts/backfill-reliability.ts",
+    "run-sql": "tsx --env-file=.env.local src/scripts/run-sql.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.33.0",
