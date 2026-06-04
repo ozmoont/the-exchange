@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
  * their partner is involved; fleet_admin can simulate, fleet_user can only view.
  */
 
-const HAPPY_PATH = ["accepted", "driver_assigned", "en_route", "on_board", "completed"] as const;
+const HAPPY_PATH = ["accepted", "driver_assigned", "driver_arrived", "en_route", "on_board", "completed"] as const;
 const TERMINAL: ReadonlySet<string> = new Set(["completed", "cancelled", "failed"]);
 
 async function simulateStatusAction(formData: FormData) {

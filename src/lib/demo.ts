@@ -23,11 +23,12 @@ import { randomBytes } from "node:crypto";
  */
 
 const COOLDOWN_MS = 20_000;
-const IN_FLIGHT = ["pushed", "accepted", "driver_assigned", "en_route", "on_board"] as const;
+const IN_FLIGHT = ["pushed", "accepted", "driver_assigned", "driver_arrived", "en_route", "on_board"] as const;
 const LIFECYCLE_NEXT: Record<string, string> = {
   pushed: "accepted",
   accepted: "driver_assigned",
-  driver_assigned: "en_route",
+  driver_assigned: "driver_arrived",
+  driver_arrived: "en_route",
   en_route: "on_board",
   on_board: "completed",
 };

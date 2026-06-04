@@ -38,18 +38,19 @@ export const partnerStatusEnum = pgEnum("partner_status", [
 export const ruleEnum = pgEnum("rule", ["allow", "block"]);
 
 export const transitStatusEnum = pgEnum("transit_status", [
-  "received",      // we have the booking from the originator
-  "routing",       // routing engine is selecting a partner
-  "no_match",      // no eligible partner — failed back to originator
-  "pushed",        // sent to receiver, awaiting confirmation
+  "received",       // we have the booking from the originator
+  "routing",        // routing engine is selecting a partner
+  "no_match",       // no eligible partner — failed back to originator
+  "pushed",         // sent to receiver, awaiting confirmation
   "accepted",
   "driver_assigned",
+  "driver_arrived", // driver at pickup location (iCabbi ARRIVED event)
   "en_route",
   "on_board",
   "completed",
   "cancelled",
   "failed",
-  "paused",        // held by kill switch
+  "paused",         // held by kill switch
   "error_auth",
   "error_other",
 ]);
@@ -91,6 +92,10 @@ export const partners = pgTable("partners", {
   adapterKey: text("adapter_key").notNull(),
   // partner-controlled webhook URL where we send status updates if they want push
   webhookUrl: text("webhook_url"),
+  // Per-fleet PII config. When true, driver name / mobile / vehicle reg flow
+  // back to the demand fleet on status events. Default false — most fleets
+  // don't need it. Opt-in for corporate / VIP / regulated accounts.
+  driverDetailsRequired: boolean("driver_details_required").notNull().default(false),
   // freeform billing notes — captured during negotiation
   billingNotes: text("billing_notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -169,6 +174,20 @@ export const transits = pgTable("transits", {
   recipientPartnerId: uuid("recipient_partner_id").references(() => partners.id),
   // once we've pushed, the receiver's id for the booking on their side
   recipientBookingExternalId: text("recipient_booking_external_id"),
+
+  // iCabbi cross-tenant partnership linkage. Populated when Position #2 is in
+  // play — recipient is on a different iCabbi tenant and the coid mechanism
+  // carries the booking. Allows us to reconcile a booking on both sides via
+  // iCabbi's native partnership protocol. Null for non-iCabbi recipients or
+  // intra-tenant routing.
+  partnershipCoid: text("partnership_coid"),
+  recipientClientId: text("recipient_client_id"),       // iCabbi tenant id (e.g. "30092")
+  recipientServerName: text("recipient_server_name"),   // iCabbi cluster (e.g. "bounds")
+  recipientSiteId: text("recipient_site_id"),           // sub-site within recipient tenant
+  // Passenger tracking URL from the recipient adapter — when present, we can
+  // pass this through to the originator so the demand-side passenger keeps
+  // their existing tracking experience.
+  trackMyTaxiLink: text("track_my_taxi_link"),
 
   status: transitStatusEnum("status").notNull().default("received"),
 

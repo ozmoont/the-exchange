@@ -18,6 +18,16 @@
 
 7. **iCabbi is the system of record.** We do not duplicate bookings, drivers, fares, or customer comms. We forward, we route, we snapshot fees, we audit.
 
+8. **Position vs iCabbi's existing partnership protocol — locked: Position #2.** iCabbi already has a partnership coid (cross-operator id) mechanism that moves bookings between two iCabbi tenants (confirmed in real API responses: `partnership_booking.coid`, `client_id`, `server_name`, `site_id`). The Exchange does **not** replace this protocol and does **not** ignore it. We sit on top: iCabbi acts as **transport**, The Exchange acts as the **decision layer** — picking which partner gets a job (geo + fee + reliability), exposing audit trails partners can invoice off, and bridging to non-iCabbi systems (CMAC, Karhoo/FreeNow, Cordic) under the same routing rules.
+
+   One-liner for partner conversations: *"iCabbi connects fleets one-to-one. The Exchange connects fleets many-to-many."*
+
+9. **Third-party initiation of coid partnerships is confirmed permitted.** The Exchange can mediate a coid partnership between two iCabbi tenants without each having pre-existing direct knowledge of the other. This is the technical bedrock of Position #2.
+
+10. **Driver-detail visibility is per-fleet config, not network-wide.** Some accounts (corporate, VIP, regulated routes) require driver name / mobile / vehicle reg to be passed through to the demand partner. Most don't. New schema field: `partners.driverDetailsRequired: boolean`. When false, the normaliser drops the driver block from the payload sent back to the demand fleet. PII minimisation default is "off"; opt-in per partner.
+
+11. **`networking_status` is a separate webhook event stream.** Distinct from the parent booking status events. Our inbound handler subscribes to both. The networking event tells us about the cross-tenant trip's lifecycle even when the parent booking on the demand side stays at `TRANSFERRED`.
+
 ## 2. Explicitly out of scope
 
 These are NOT in the MVP. If a request fits one of these categories, Andy rejects or defers — surface to the founder if there's commercial pressure to include:
@@ -45,7 +55,7 @@ These are NOT in the MVP. If a request fits one of these categories, Andy reject
 | Horizon | Window | Goal |
 |---|---|---|
 | **H0 — Scaffold** | Done | Project scaffolded, mock adapters, routing engine, portal pages, smoke test, team workflow installed. |
-| **H1 — Real iCabbi adapter + pilot** | Next | Replace `MockICabbiAdapter` with real `ICabbiAdapter` against sandbox creds. Onboard two real iCabbi fleets. Demo end-to-end with Frank. |
+| **H1 — Real iCabbi adapter + pilot** | Next | Replace `MockICabbiAdapter` with real `ICabbiAdapter` against sandbox creds. Onboard two real iCabbi fleets (247 Birmingham + Take Me as proof-of-concept pair). Demo end-to-end with Frank. Validate Position #2: route a booking via our decision layer using iCabbi's coid mechanism as transport. |
 | **H2 — First external partner** | After H1 | CMAC-shaped or FreeNow sandbox. Prove the adapter pattern under a non-iCabbi shape. |
 | **H3 — Fee config UI + Auth** | After H2 | Replace seed-only fees with admin UI under `/fees`. Wrap portal with Auth.js. |
 | **H4 — Production hardening** | Pre-launch | Rate limits, monitoring, signed webhooks, secret rotation, rollback runbook. |

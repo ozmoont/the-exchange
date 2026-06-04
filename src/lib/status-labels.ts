@@ -65,6 +65,12 @@ export const STATUS_META: Record<string, StatusMeta> = {
     group: "in_flight",
     description: "Partner fleet assigned a driver.",
   },
+  driver_arrived: {
+    label: "Driver at pickup",
+    tone: "info",
+    group: "in_flight",
+    description: "Driver has arrived at the pickup location and is waiting for the passenger.",
+  },
   en_route: {
     label: "Driver en route",
     tone: "info",
@@ -148,7 +154,7 @@ export function statusBadgeClass(status: string): string {
 
 /** All status codes that belong to the same UI group as a given group key. */
 export const STATUSES_BY_GROUP: Record<StatusGroup, string[]> = {
-  in_flight: ["received", "routing", "pushed", "accepted", "driver_assigned", "en_route", "on_board"],
+  in_flight: ["received", "routing", "pushed", "accepted", "driver_assigned", "driver_arrived", "en_route", "on_board"],
   completed: ["completed"],
   no_match: ["no_match"],
   paused: ["paused"],

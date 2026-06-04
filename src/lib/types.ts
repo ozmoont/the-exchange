@@ -4,18 +4,28 @@ import type { FeeSnapshot } from "@/db/schema";
  * The neutral booking shape the middleware passes between adapters.
  * Adapters translate to/from this format. iCabbi-shaped and CMAC-shaped
  * payloads both arrive normalised as a `NormalisedBooking`.
+ *
+ * Fields are organised in three layers:
+ *   1. Core — every adapter must populate (pickup, dropoff, passenger, etc.)
+ *   2. Operational — most adapters populate (vehicle type, payment, notes)
+ *   3. iCabbi-rich — only populated by adapters that have the data (vias,
+ *      attribute groups, tariff ids, etc.). Other adapters leave them
+ *      undefined; the routing engine falls back to defaults.
+ *
+ * Backward compatible — every new field is optional or has a default-friendly
+ * shape so old callers (seed.ts, mock adapter, fire-jobs script) keep working.
  */
 export type NormalisedBooking = {
-  // From the originator
+  // ---------- Core (every adapter populates) ----------
   originatorBookingExternalId: string;
   bookingType: "asap" | "prebook";
   channel: "app" | "web" | "phone" | "api";
 
-  pickup: { lat: number; lng: number; address: string; postcode?: string };
-  dropoff: { lat: number; lng: number; address: string; postcode?: string };
+  pickup: BookingPoint;
+  dropoff: BookingPoint;
 
   scheduledFor?: string; // ISO timestamp, set for prebook
-  vehicleType: string;
+  vehicleType: string;   // our taxonomy: "standard" | "exec" | "wav" | …
   passengerCount: number;
   fareEstimatePence?: number;
 
@@ -26,8 +36,68 @@ export type NormalisedBooking = {
   };
 
   notes?: string;
+
   // raw originator payload retained for audit; receivers may opt in to specific fields
   raw: Record<string, unknown>;
+
+  // ---------- Operational (most adapters populate) ----------
+
+  /** Driver-facing instructions ("ring buzzer 3", "back gate"). */
+  instructions?: string;
+  /** Dispatcher-facing comment ("VIP", "regular"). Not shown to driver. */
+  driverComment?: string;
+  /** Payment method on the originating side. Affects fee + reconciliation. */
+  paymentType?: "cash" | "card" | "account" | "voucher";
+  /** Source channel as reported by the originator (APP, DISPATCH, etc.). Informational. */
+  source?: string;
+  /** Flight number for airport pickups. */
+  flightNumber?: string;
+  /** Flight number for airport dropoffs. */
+  destinationFlightNumber?: string;
+
+  // ---------- iCabbi-rich (only populated by adapters that have it) ----------
+
+  /**
+   * Intermediate pickup / dropoff points. Single-stop bookings have vias = [].
+   * Adapters that don't support multi-stop leave this undefined.
+   *
+   *   pickup → vias[0] → vias[1] → ... → dropoff
+   */
+  vias?: BookingPoint[];
+
+  /**
+   * Native vehicle code in the originator's taxonomy (e.g. iCabbi "R4").
+   * Used by the recipient adapter when re-creating the booking on the other side.
+   */
+  nativeVehicleType?: string;
+  /** Native vehicle group ("Taxi", "Executive", "MPV"). */
+  vehicleGroup?: string;
+  /**
+   * Compliance / accessibility flag bundle — child seat, WAV, etc. Routing
+   * engine must honour these when matching candidates. Adapter-specific id.
+   */
+  attributeGroupId?: string;
+  /** Corporate account id when the booking is on-account. */
+  accountId?: string;
+  /** Originator-side tariff id (for fare reconciliation). */
+  tariffId?: string;
+  /** Whether the originator used a fixed-fare quote. */
+  fixedFare?: boolean;
+  /** Originator-side operating zone (sub-region). */
+  zoneId?: string;
+  /** Originator-side priority indicator. Higher = more urgent. */
+  priority?: number;
+};
+
+export type BookingPoint = {
+  lat: number;
+  lng: number;
+  address: string;
+  postcode?: string;
+  /** Name of the passenger at this stop (for multi-passenger via routes). */
+  contactName?: string;
+  /** Phone at this stop. */
+  contactPhone?: string;
 };
 
 export type CreateBookingInput = {
@@ -40,6 +110,19 @@ export type CreateBookingInput = {
 export type CreateBookingResult = {
   externalId: string;
   acceptedAt: string; // ISO
+  /**
+   * Cross-tenant linkage populated when the recipient is on iCabbi and the
+   * coid partnership mechanism carried the booking. Stored on the transit so
+   * we can reconcile both sides later.
+   */
+  partnership?: {
+    coid?: string;
+    clientId?: string;
+    serverName?: string;
+    siteId?: string;
+  };
+  /** Passenger tracking URL exposed by the recipient, if any. */
+  trackMyTaxiLink?: string;
 };
 
 export type CancelBookingInput = {
