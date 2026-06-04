@@ -18,9 +18,31 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const user = await getCurrentUser();
   const isSuper = user?.role === "super_admin";
 
+  // P0-1: Persistent banner when DISABLE_AUTH is on. The escape hatch is
+  // necessary for demos but easy to forget about — this banner makes it
+  // impossible to miss. Always render at the very top, regardless of auth.
+  const authDisabled = process.env.DISABLE_AUTH === "true";
+  if (authDisabled && process.env.NODE_ENV === "production") {
+    console.warn(
+      "[BOOT WARNING] DISABLE_AUTH=true in production. Every visitor is " +
+        "super_admin. Set DISABLE_AUTH=false (or remove the var) to require " +
+        "sign-in.",
+    );
+  }
+
   return (
     <html lang="en">
       <body className="min-h-screen bg-surface-muted text-ink">
+        {authDisabled && (
+          <div
+            role="alert"
+            className="bg-danger text-danger-fg px-4 py-2 text-center text-xs font-semibold tracking-wide border-b border-red-300"
+          >
+            ⚠️ DEMO MODE — auth is disabled (DISABLE_AUTH=true). Anyone with the
+            URL is treated as super_admin. Remove the env var before letting
+            real partners connect.
+          </div>
+        )}
         {user && (
           <header className="bg-surface-inverse text-white">
             <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-6">

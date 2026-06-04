@@ -50,6 +50,8 @@ type Args = {
   laggardMinRate: number;
   laggardMaxRate: number;
   completedShare: number;
+  concurrency: number;
+  limit: number; // 0 = no cap
 };
 
 function parseArgs(): Args {
@@ -61,6 +63,8 @@ function parseArgs(): Args {
     laggardMinRate: 0.3,
     laggardMaxRate: 0.7,
     completedShare: 0.8,
+    concurrency: 8,
+    limit: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -71,6 +75,8 @@ function parseArgs(): Args {
     else if (k === "--laggard-min-rate" && Number.isFinite(v)) { a.laggardMinRate = v; i++; }
     else if (k === "--laggard-max-rate" && Number.isFinite(v)) { a.laggardMaxRate = v; i++; }
     else if (k === "--completed-share" && Number.isFinite(v)) { a.completedShare = v; i++; }
+    else if (k === "--concurrency" && Number.isFinite(v)) { a.concurrency = v; i++; }
+    else if (k === "--limit" && Number.isFinite(v)) { a.limit = v; i++; }
   }
   return a;
 }
@@ -150,8 +156,12 @@ async function main() {
       ),
     );
   const alreadyAccepted = new Set(acceptedEvents.map((e) => e.transitId));
-  const toProcess = pushedTransits.filter((t) => !alreadyAccepted.has(t.id));
-  console.log(`  ${toProcess.length} need synthesis · ${alreadyAccepted.size} already advanced.`);
+  let toProcess = pushedTransits.filter((t) => !alreadyAccepted.has(t.id));
+  if (args.limit > 0 && args.limit < toProcess.length) {
+    console.log(`  Limit applied: processing first ${args.limit} of ${toProcess.length}.`);
+    toProcess = toProcess.slice(0, args.limit);
+  }
+  console.log(`  ${toProcess.length} need synthesis · ${alreadyAccepted.size} already advanced. (concurrency=${args.concurrency})`);
   console.log();
 
   // 3. Walk each transit, decide outcome, write events + status updates
@@ -163,13 +173,24 @@ async function main() {
     error: 0,
   };
 
-  for (const t of toProcess) {
-    if (!t.recipientPartnerId) continue;
+  let processedSoFar = 0;
+  const startTime = Date.now();
+  let nextIdx = 0;
+  async function processOne(t: typeof toProcess[number]) {
+    processedSoFar++;
+    if (processedSoFar % 25 === 0 || processedSoFar === toProcess.length) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const rate = (processedSoFar / Math.max(0.1, Number(elapsed))).toFixed(1);
+      process.stdout.write(
+        `  ${processedSoFar}/${toProcess.length} (${rate}/s, ${elapsed}s elapsed)\r`,
+      );
+    }
+    if (!t.recipientPartnerId) return;
     try {
       const rate = targetRateByPartner.get(t.recipientPartnerId);
       if (rate === undefined) {
         counts.ghosted++;
-        continue;
+        return;
       }
 
       // Use a per-transit random seed so the same transit gets the same
@@ -179,7 +200,7 @@ async function main() {
 
       if (!wouldAccept) {
         counts.ghosted++;
-        continue;
+        return;
       }
 
       const createdAt = new Date(t.createdAt);
@@ -211,7 +232,7 @@ async function main() {
           })
           .where(eq(transits.id, t.id));
         counts.acceptedNotCompleted++;
-        continue;
+        return;
       }
 
       // Add lifecycle events through to completed at realistic intervals
@@ -260,6 +281,19 @@ async function main() {
       console.error(`  transit ${t.id} failed:`, err instanceof Error ? err.message : err);
     }
   }
+
+  // Worker pool — N parallel processOne()s pulling from the shared toProcess array
+  async function worker() {
+    while (true) {
+      const idx = nextIdx++;
+      if (idx >= toProcess.length) return;
+      await processOne(toProcess[idx]);
+    }
+  }
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < args.concurrency; i++) workers.push(worker());
+  await Promise.all(workers);
+  console.log(); // newline after the carriage-return progress bar
 
   console.log("Backfill outcomes:");
   console.log(`  Accepted + completed:   ${counts.acceptedAndCompleted}`);

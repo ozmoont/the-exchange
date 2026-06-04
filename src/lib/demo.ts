@@ -91,6 +91,14 @@ export async function maybeTickDemoMode(): Promise<void> {
   } catch (err) {
     console.warn("[demo] reconciliation failed:", err instanceof Error ? err.message : err);
   }
+
+  // Periodic GC on rate-limit rows older than 24h. Cheap — single DELETE.
+  try {
+    const { cleanupOldRateLimitRows } = await import("@/lib/rate-limit");
+    await cleanupOldRateLimitRows();
+  } catch {
+    // Cleanup is best-effort; don't surface failures
+  }
 }
 
 async function tickOnce(): Promise<void> {

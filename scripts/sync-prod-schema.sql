@@ -51,6 +51,15 @@ ALTER TABLE network_controls
   ADD COLUMN IF NOT EXISTS last_reliability_compute_at timestamp,
   ADD COLUMN IF NOT EXISTS last_reconciliation_run_at  timestamp;
 
+-- ---------- rate_limit_buckets (P0-4 rate limiting) ----------
+CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+  key          text NOT NULL,
+  window_start timestamp NOT NULL,
+  count        integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);
+CREATE INDEX IF NOT EXISTS rate_limit_window_idx ON rate_limit_buckets (window_start);
+
 COMMIT;
 
 -- Confirm we have everything

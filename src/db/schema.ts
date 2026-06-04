@@ -298,6 +298,35 @@ export const auditLog = pgTable("audit_log", {
   createdAtIdx: index("audit_log_created_at_idx").on(t.createdAt),
 }));
 
+// ---------- rate-limit buckets ----------
+//
+// Fixed-window counter, 1 row per (key, window_start). Each request that
+// matches a key:
+//   - INSERT ... ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1
+//   - if count > limit → 429
+//
+// Window granularity is per-call (a per-partner ingest limit might use a
+// 60s window, a magic-link limit a 3600s window). Rows older than 24h are
+// fine to garbage-collect via a periodic DELETE.
+//
+// This is the "pilot scale" implementation — fine for low hundreds of
+// requests/minute, predictable on Neon's pooled connections. When traffic
+// outgrows it, swap to Upstash Redis using the same checkRateLimit
+// signature in lib/rate-limit.ts.
+
+export const rateLimitBuckets = pgTable(
+  "rate_limit_buckets",
+  {
+    key: text("key").notNull(),
+    windowStart: timestamp("window_start").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.key, t.windowStart] }),
+    windowIdx: index("rate_limit_window_idx").on(t.windowStart),
+  }),
+);
+
 // ---------- webhook idempotency ----------
 
 export const webhookDeliveries = pgTable("webhook_deliveries", {

@@ -7,6 +7,11 @@ import { eq } from "drizzle-orm";
 import { getAdapterForPartner } from "@/adapters/registry";
 import { isFreshDelivery, recordWebhookOutcome, recordRejectedDelivery } from "@/lib/idempotency";
 import { routeBooking, forwardStatusUpdate } from "@/lib/routing";
+import {
+  checkRateLimit,
+  LIMIT_INGEST_PER_PARTNER,
+  WINDOW_INGEST_SECONDS,
+} from "@/lib/rate-limit";
 
 /**
  * Per-partner webhook receiver. Each connected partner gets a unique URL:
@@ -37,6 +42,24 @@ export async function POST(
   const { partnerId } = await params;
   if (!partnerId) {
     return NextResponse.json({ error: "missing_partner_id" }, { status: 400 });
+  }
+
+  // P0-4: rate limit per partner. 60 events/minute is well above realistic
+  // iCabbi traffic — they batch and our peak observed in the analysis is
+  // single-digit/minute. Set WEBHOOK_INGEST_RATE_LIMIT env var to tune.
+  const rl = await checkRateLimit(
+    `ingest:${partnerId}`,
+    Number(process.env.WEBHOOK_INGEST_RATE_LIMIT ?? LIMIT_INGEST_PER_PARTNER),
+    WINDOW_INGEST_SECONDS,
+  );
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "rate_limited", retry_after_seconds: rl.retryAfterSeconds },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rl.retryAfterSeconds ?? 60) },
+      },
+    );
   }
 
   // Load partner + webhook secret
@@ -79,8 +102,41 @@ export async function POST(
     return NextResponse.json({ error: "missing_envelope_id" }, { status: 400 });
   }
 
+  // P0-5: replay protection. The HMAC signature proves the payload came from
+  // an entity that knows our shared secret — but a captured payload can be
+  // replayed indefinitely. Reject anything whose sent_at is more than
+  // WEBHOOK_MAX_AGE_MS old. Karhoo / iCabbi both emit sent_at on every
+  // event. Missing sent_at = malformed (reject).
+  //
+  // Window default 5 min covers realistic clock skew + first-retry latency.
+  // Set WEBHOOK_MAX_AGE_MS env var to override.
+  const maxAgeMs = Number(process.env.WEBHOOK_MAX_AGE_MS ?? 5 * 60_000);
+  const sentAtRaw = envelope.sent_at;
+  const sentAtMs = typeof sentAtRaw === "string" ? Date.parse(sentAtRaw) : NaN;
+  if (!Number.isFinite(sentAtMs)) {
+    await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", {
+      reason: "missing_sent_at",
+      envelope_id: envelopeId,
+    });
+    return NextResponse.json({ error: "missing_sent_at" }, { status: 400 });
+  }
+  const ageMs = Date.now() - sentAtMs;
+  if (ageMs > maxAgeMs) {
+    console.warn(
+      `[webhook] replay-protection rejected stale event ${envelopeId} for partner ${partnerId} (age ${Math.round(ageMs / 1000)}s)`,
+    );
+    await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", {
+      reason: "stale_sent_at",
+      envelope_id: envelopeId,
+      age_ms: ageMs,
+    });
+    return NextResponse.json({ error: "stale_event", age_seconds: Math.round(ageMs / 1000) }, { status: 401 });
+  }
+
   // Idempotency: same envelope id from the same partner is a no-op (retries
   // commonly fire when our handler is slow, then again at 10s and 30s).
+  // This also catches replay attempts that arrive within the freshness window
+  // (the unique-constraint INSERT rejects them).
   const fresh = await isFreshDelivery(`ingest:${partnerId}`, envelopeId, envelope);
   if (!fresh) {
     return NextResponse.json({ status: "duplicate" }, { status: 200 });

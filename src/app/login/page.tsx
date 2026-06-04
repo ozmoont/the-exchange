@@ -5,6 +5,11 @@ import {
   isEmailAllowed,
 } from "@/lib/auth";
 import { sendMagicLinkEmail } from "@/lib/email";
+import {
+  checkRateLimit,
+  LIMIT_MAGIC_LINK_PER_EMAIL,
+  WINDOW_MAGIC_LINK_SECONDS,
+} from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +26,22 @@ async function sendLinkAction(formData: FormData) {
 
   if (!email) {
     redirect("/login?error=missing_email");
+  }
+
+  // P0-4: rate limit magic-link requests per email. Stops a malicious actor
+  // from spamming someone's inbox with sign-in links. Limit + window tunable
+  // via env vars.
+  const rl = await checkRateLimit(
+    `magic_link:${email}`,
+    Number(process.env.MAGIC_LINK_RATE_LIMIT ?? LIMIT_MAGIC_LINK_PER_EMAIL),
+    WINDOW_MAGIC_LINK_SECONDS,
+  );
+  if (!rl.ok) {
+    // Don't tell the requester they hit the limit (would leak that the email
+    // is on the allowlist). Show the same "if your email is on the list, a
+    // link has been sent" message as the happy path.
+    console.warn(`[auth] rate-limited magic-link request for ${email}`);
+    redirect("/login?sent=1");
   }
 
   if (await isEmailAllowed(email)) {
