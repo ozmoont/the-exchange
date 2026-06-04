@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { webhookDeliveries } from "@/db/schema";
-import { and, desc, eq, like, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, like, type SQL } from "drizzle-orm";
 import { requireSuperAdmin } from "@/lib/auth";
 import Link from "next/link";
 import { LiveRefresh } from "@/components/live-refresh";
@@ -67,15 +67,24 @@ export default async function WebhooksPage({
     .from(webhookDeliveries);
   const sources = allSourcesResult.map((r) => r.source).sort();
 
-  // Quick stats — outcome breakdown across all unfiltered rows
-  const statsRows = await db
-    .select()
-    .from(webhookDeliveries);
+  // Quick stats — outcome breakdown across all unfiltered rows.
+  //
+  // P1-E5: was loading every webhook_deliveries row into memory and reducing
+  // in JS. At pilot scale that's a page-render hazard. Now: a single GROUP BY
+  // aggregate that returns one row per distinct outcome (≤9 rows).
+  const outcomeRows = await db
+    .select({ outcome: webhookDeliveries.outcome, n: count() })
+    .from(webhookDeliveries)
+    .groupBy(webhookDeliveries.outcome);
+
   const outcomeCounts = new Map<string, number>();
   let pendingCount = 0;
-  for (const r of statsRows) {
-    if (r.outcome) outcomeCounts.set(r.outcome, (outcomeCounts.get(r.outcome) ?? 0) + 1);
-    else pendingCount++;
+  let totalDeliveries = 0;
+  for (const r of outcomeRows) {
+    const n = Number(r.n);
+    totalDeliveries += n;
+    if (r.outcome) outcomeCounts.set(r.outcome, n);
+    else pendingCount += n;
   }
 
   return (
@@ -93,7 +102,7 @@ export default async function WebhooksPage({
       </div>
 
       {/* Stats strip */}
-      {statsRows.length > 0 && (
+      {totalDeliveries > 0 && (
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
           {pendingCount > 0 && <StatPill label="pending" count={pendingCount} tone="neutral" />}
           {OUTCOMES.filter((o) => (outcomeCounts.get(o) ?? 0) > 0).map((o) => (

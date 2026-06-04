@@ -73,6 +73,30 @@ CREATE TABLE IF NOT EXISTS synthetic_test_runs (
 );
 CREATE INDEX IF NOT EXISTS synthetic_test_runs_ran_at_idx ON synthetic_test_runs (ran_at);
 
+-- ---------- P1-E5 query optimisation indexes ----------
+-- See docs/specs/P1-E5-query-optimisation.md for rationale.
+-- All idempotent; safe to re-run.
+CREATE INDEX IF NOT EXISTS partners_participation_mode_idx
+  ON partners (participation_mode);
+CREATE INDEX IF NOT EXISTS transits_created_at_idx
+  ON transits (created_at DESC);
+CREATE INDEX IF NOT EXISTS transits_originator_idx
+  ON transits (originator_partner_id);
+CREATE INDEX IF NOT EXISTS transits_recipient_created_idx
+  ON transits (recipient_partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS transits_accept_deadline_idx
+  ON transits (accept_deadline)
+  WHERE status = 'pushed' AND accept_deadline IS NOT NULL;
+CREATE INDEX IF NOT EXISTS transits_reconciled_flagged_idx
+  ON transits (id)
+  WHERE reconciled_flagged = true;
+CREATE INDEX IF NOT EXISTS transit_events_transit_created_idx
+  ON transit_events (transit_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_log_action_idx
+  ON audit_log (action, created_at DESC);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_received_at_idx
+  ON webhook_deliveries (received_at DESC);
+
 COMMIT;
 
 -- Confirm we have everything

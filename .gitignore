@@ -19,8 +19,10 @@ dist/
 .env.test.local
 .env.production.local
 
-# drizzle
-drizzle/
+# drizzle — DO NOT IGNORE.
+# Migration files and the journal must be tracked in git; otherwise the prod
+# `pnpm db:migrate` step on Vercel runs against an empty migrations folder and
+# silently skips schema changes. See docs/MIGRATIONS.md.
 
 # logs
 npm-debug.log*

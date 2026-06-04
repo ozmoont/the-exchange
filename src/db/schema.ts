@@ -12,6 +12,7 @@ import {
   unique,
   primaryKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ---------- enums ----------
 
@@ -140,6 +141,10 @@ export const partners = pgTable("partners", {
 }, (t) => ({
   statusIdx: index("partners_status_idx").on(t.status),
   kindIdx: index("partners_kind_idx").on(t.kind),
+  // P1-E5: routing engine filters candidates by participation_mode IN
+  // ('receive_only', 'send_and_receive'). At ~100 partners today this is a
+  // seqscan-and-discard; matters at 1k+.
+  participationModeIdx: index("partners_participation_mode_idx").on(t.participationMode),
 }));
 
 // ---------- bilateral rules (the allow/block matrix) ----------
@@ -269,6 +274,31 @@ export const transits = pgTable("transits", {
   ),
   statusIdx: index("transits_status_idx").on(t.status),
   recipientIdx: index("transits_recipient_idx").on(t.recipientPartnerId),
+  // P1-E5 indexes ----------------------------------------------------------
+  // /bookings ORDER BY created_at DESC LIMIT 200 + dashboard recent + 14-day
+  // distribution sparkline all want a created_at sort. desc() matches the
+  // hot access pattern.
+  createdAtIdx: index("transits_created_at_idx").on(t.createdAt.desc()),
+  // Fleet-scoped dashboard + partner-detail "your bookings" view.
+  originatorIdx: index("transits_originator_idx").on(t.originatorPartnerId),
+  // Reliability recompute outer filter (recipient + 7d window) and partner-
+  // detail "active to me" feed. Composite >> two singles for this access
+  // pattern; the existing recipientIdx stays for full-history per-recipient
+  // queries that don't use a time bound.
+  recipientCreatedIdx: index("transits_recipient_created_idx").on(
+    t.recipientPartnerId,
+    t.createdAt.desc(),
+  ),
+  // recheckStaleAcceptances() runs every 60s scanning for expired accept
+  // deadlines. Partial keeps this index 10s–100s of rows even at scale, vs.
+  // the millions a full status-based scan would touch over time.
+  acceptDeadlineIdx: index("transits_accept_deadline_idx")
+    .on(t.acceptDeadline)
+    .where(sql`status = 'pushed' AND accept_deadline IS NOT NULL`),
+  // Dashboard banner check — typically 0–10 rows. Partial keeps it microscopic.
+  reconciledFlaggedIdx: index("transits_reconciled_flagged_idx")
+    .on(t.id)
+    .where(sql`reconciled_flagged = true`),
 }));
 
 // ---------- events (append-only timeline per transit) ----------
@@ -284,6 +314,13 @@ export const transitEvents = pgTable("transit_events", {
 }, (t) => ({
   transitIdx: index("transit_events_transit_idx").on(t.transitId),
   createdAtIdx: index("transit_events_created_at_idx").on(t.createdAt),
+  // P1-E5: bookings page batches driver-event lookup over many transit ids
+  // and takes the latest per transit. The composite ranges scan a partition
+  // of the table per transit, sorted DESC.
+  transitCreatedIdx: index("transit_events_transit_created_idx").on(
+    t.transitId,
+    t.createdAt.desc(),
+  ),
 }));
 
 // ---------- audit log (everything admin-y) ----------
@@ -302,6 +339,9 @@ export const auditLog = pgTable("audit_log", {
 }, (t) => ({
   categoryIdx: index("audit_log_category_idx").on(t.category),
   createdAtIdx: index("audit_log_created_at_idx").on(t.createdAt),
+  // P1-E5: dashboard counts "partner.auto_suspended" entries in last 7d.
+  // Composite supports the action-then-time access pattern in one scan.
+  actionIdx: index("audit_log_action_idx").on(t.action, t.createdAt.desc()),
 }));
 
 // ---------- synthetic test runs (P1-O4) ----------
@@ -382,6 +422,8 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   processedAt: timestamp("processed_at"),
 }, (t) => ({
   uniq: unique("webhook_deliveries_unique").on(t.source, t.sourceEventId),
+  // P1-E5: /webhooks inspector orders by received_at DESC LIMIT 100.
+  receivedAtIdx: index("webhook_deliveries_received_at_idx").on(t.receivedAt.desc()),
 }));
 
 // ---------- network-level controls ----------
