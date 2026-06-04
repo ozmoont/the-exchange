@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { transits, partners } from "@/db/schema";
+import { transits, partners, transitEvents } from "@/db/schema";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import Link from "next/link";
@@ -91,24 +91,35 @@ export default async function BookingsPage({
     : [];
   const recipientById = new Map(recipients.map((r) => [r.id, r]));
 
-  // Pull the latest driver-bearing event per booking — one round trip via
-  // DISTINCT ON.
-  type DriverRow = { transitId: string; detail: DriverDetail; createdAt: Date };
-  const driverRows = transitIds.length
-    ? await db.execute<DriverRow>(sql`
-        SELECT DISTINCT ON (transit_id)
-          transit_id    AS "transitId",
-          detail        AS "detail",
-          created_at    AS "createdAt"
-        FROM transit_events
-        WHERE transit_id = ANY(${transitIds}::uuid[])
-          AND detail ? 'driver'
-        ORDER BY transit_id, created_at DESC
-      `)
-    : { rows: [] as DriverRow[] };
+  // Pull every driver-bearing event for the displayed transits, then take the
+  // most recent per transit in JS. Slightly more rows over the wire than a
+  // DISTINCT ON, but it goes through drizzle's parameter binding instead of
+  // raw SQL with array-cast syntax that bit us on prod. At 200 transits this
+  // is ~50ms worst case.
   const driverByTransit = new Map<string, DriverDetail>();
-  for (const r of (driverRows as unknown as { rows: DriverRow[] }).rows ?? []) {
-    driverByTransit.set(r.transitId, r.detail);
+  if (transitIds.length > 0) {
+    const driverEvents = await db
+      .select({
+        transitId: transitEvents.transitId,
+        detail: transitEvents.detail,
+        createdAt: transitEvents.createdAt,
+      })
+      .from(transitEvents)
+      .where(
+        and(
+          inArray(transitEvents.transitId, transitIds),
+          // detail->'driver' IS NOT NULL — equivalent of `detail ? 'driver'`
+          sql`${transitEvents.detail} -> 'driver' IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(transitEvents.createdAt));
+
+    for (const evt of driverEvents) {
+      // First row per transit wins (we sorted desc, so it's the most recent)
+      if (!driverByTransit.has(evt.transitId) && evt.detail) {
+        driverByTransit.set(evt.transitId, evt.detail as DriverDetail);
+      }
+    }
   }
 
   const highlight = sp.highlight ?? null;
