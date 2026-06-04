@@ -11,6 +11,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "seed": "tsx --env-file=.env.local src/scripts/seed.ts",
     "smoke": "tsx --env-file=.env.local src/scripts/smoke-test.ts",
