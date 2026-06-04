@@ -264,20 +264,29 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
   // recorded in webhook_deliveries via the helper itself.
   try {
     const { sendOutboundEvent } = await import("@/lib/outbound-webhooks");
-    await sendOutboundEvent(t.originatorPartnerId, "transit.rerouted", {
-      originatorBookingExternalId: t.originatorBookingExternalId,
-      transitId: t.id,
-      previous_recipient: t.recipientPartnerId
-        ? { id: t.recipientPartnerId, name: previousPartner?.name ?? null }
-        : null,
-      new_recipient: {
-        id: next.recipientId,
-        name: newPartner?.name ?? null,
+    // Stable event id: `${transitId}:rerouted:${rerouteCount}`. Same logical
+    // event always produces the same id, so a retry of the outbound delivery
+    // doesn't generate a duplicate event from the partner's POV.
+    const eventKey = `${t.id}:transit.rerouted:${t.rerouteCount + 1}`;
+    await sendOutboundEvent(
+      t.originatorPartnerId,
+      "transit.rerouted",
+      {
+        originatorBookingExternalId: t.originatorBookingExternalId,
+        transitId: t.id,
+        previous_recipient: t.recipientPartnerId
+          ? { id: t.recipientPartnerId, name: previousPartner?.name ?? null }
+          : null,
+        new_recipient: {
+          id: next.recipientId,
+          name: newPartner?.name ?? null,
+        },
+        reason: "accept_window_expired",
+        reroute_count: t.rerouteCount + 1,
+        occurred_at: new Date().toISOString(),
       },
-      reason: "accept_window_expired",
-      reroute_count: t.rerouteCount + 1,
-      occurred_at: new Date().toISOString(),
-    });
+      eventKey,
+    );
   } catch (err) {
     log.warn("reroute outbound event failed", {
       transit_id: t.id,

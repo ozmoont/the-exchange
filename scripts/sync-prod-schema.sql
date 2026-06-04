@@ -28,7 +28,8 @@ ALTER TABLE partners
   ADD COLUMN IF NOT EXISTS auto_reroute_rate   real,
   ADD COLUMN IF NOT EXISTS median_acceptance_ms integer,
   ADD COLUMN IF NOT EXISTS total_pushed_7d     integer,
-  ADD COLUMN IF NOT EXISTS metrics_updated_at  timestamp;
+  ADD COLUMN IF NOT EXISTS metrics_updated_at  timestamp,
+  ADD COLUMN IF NOT EXISTS auto_suspend_cooldown_until timestamp;
 
 -- ---------- transits table ----------
 ALTER TABLE transits

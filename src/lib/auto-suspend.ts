@@ -55,12 +55,21 @@ export async function enforceReliabilityThresholds(): Promise<AutoSuspendOutcome
     untouched: 0,
   };
 
+  const now = Date.now();
   for (const p of candidates) {
     const rate = p.acceptanceRate;
     const sample = p.totalPushed7d ?? 0;
 
     // Need both a meaningful rate AND enough sample
     if (rate === null) {
+      outcome.untouched++;
+      continue;
+    }
+
+    // Cooldown — if a human just manually re-activated this partner, leave
+    // them alone for 7 days. Otherwise we'd auto-re-suspend them on the same
+    // stale data within the next 5 minutes.
+    if (p.autoSuspendCooldownUntil && new Date(p.autoSuspendCooldownUntil).getTime() > now) {
       outcome.untouched++;
       continue;
     }

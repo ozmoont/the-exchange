@@ -79,6 +79,12 @@ export const partners = pgTable("partners", {
   // For manual status changes, optional freeform note from the admin.
   // Null on pristine partners that have only ever had their default status.
   statusReason: text("status_reason"),
+  // After a human manually re-activates a partner (e.g. unsuspending a fleet
+  // that auto-suspend caught), set this to now + 7 days. enforceReliability-
+  // Thresholds skips partners whose cooldown is still active, giving fresh
+  // metrics time to roll in before the engine considers them again. Prevents
+  // immediate re-suspend on stale data.
+  autoSuspendCooldownUntil: timestamp("auto_suspend_cooldown_until"),
   // operational rules — see notes below
   operatingRegions: jsonb("operating_regions").$type<string[]>().notNull().default([]),
   serviceZones: jsonb("service_zones").$type<string[]>().notNull().default([]),

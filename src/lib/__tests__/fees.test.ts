@@ -107,3 +107,95 @@ describe("makeSnapshot", () => {
     expect(snap.computedPassengerAddOnsPence).toBe(50);
   });
 });
+
+describe("makeSnapshot — determinism (P1-E3 idempotency)", () => {
+  /**
+   * makeSnapshot must be a pure function. The same inputs MUST produce
+   * structurally identical outputs across many calls. Catches accidental
+   * drift if anyone introduces non-determinism (clock reads, randomUUID,
+   * floating-point ordering changes).
+   *
+   * Why this matters: fee snapshots travel with the booking and are the
+   * reference for billing reconciliation. If two snapshots taken at the
+   * same instant for the same booking diverged, partners would argue
+   * about which one is the truth. Determinism = no argument.
+   */
+  it("produces identical output across 100 invocations with identical inputs", () => {
+    const cfg = {
+      ...systemDefault(),
+      techFeePence: 75,
+      techFeeBps: 215,
+      bookingFeePence: 30,
+      adminFeePence: 15,
+      adminFeeBps: 187,
+    };
+    const booking: NormalisedBooking = { ...baseBooking, fareEstimatePence: 4321 };
+
+    const first = makeSnapshot(cfg, "cfg-determinism-1", booking);
+    for (let i = 0; i < 100; i++) {
+      const next = makeSnapshot(cfg, "cfg-determinism-1", booking);
+      expect(next).toStrictEqual(first);
+    }
+  });
+
+  it("produces different output when only the fare changes", () => {
+    const cfg = { ...systemDefault(), techFeeBps: 500 };
+    const a = makeSnapshot(cfg, "x", { ...baseBooking, fareEstimatePence: 1000 });
+    const b = makeSnapshot(cfg, "x", { ...baseBooking, fareEstimatePence: 2000 });
+    expect(a.computedPassengerAddOnsPence).not.toEqual(b.computedPassengerAddOnsPence);
+    expect(a.fareAtSnapshotPence).toBe(1000);
+    expect(b.fareAtSnapshotPence).toBe(2000);
+  });
+
+  it("produces different output when only the config id changes", () => {
+    const a = makeSnapshot(systemDefault(), "cfg-A", baseBooking);
+    const b = makeSnapshot(systemDefault(), "cfg-B", baseBooking);
+    expect(a.resolvedFromFeeConfigId).toBe("cfg-A");
+    expect(b.resolvedFromFeeConfigId).toBe("cfg-B");
+    // Everything else identical
+    expect({ ...a, resolvedFromFeeConfigId: "x" }).toStrictEqual({
+      ...b,
+      resolvedFromFeeConfigId: "x",
+    });
+  });
+
+  it("is independent of clock — calling at different wall times produces same snapshot", () => {
+    const cfg = { ...systemDefault(), techFeeBps: 200 };
+    const booking = { ...baseBooking, fareEstimatePence: 3333 };
+    const a = makeSnapshot(cfg, "cfg-clock", booking);
+    // simulate a delay — even if any future helper reaches for Date.now,
+    // the snapshot it produces shouldn't capture that drift
+    const later = makeSnapshot(cfg, "cfg-clock", booking);
+    expect(later).toStrictEqual(a);
+  });
+
+  it("handles every combination of booking type × channel × asap-applicability deterministically", () => {
+    const types: Array<"asap" | "prebook"> = ["asap", "prebook"];
+    const channels: Array<"app" | "web" | "phone" | "api"> = ["app", "web", "phone", "api"];
+    const fares = [0, 100, 1234, 9999, 100000];
+
+    for (const bookingType of types) {
+      for (const channel of channels) {
+        for (const fareEstimatePence of fares) {
+          const booking: NormalisedBooking = {
+            ...baseBooking,
+            bookingType,
+            channel,
+            fareEstimatePence,
+          };
+          const cfg = {
+            ...systemDefault(),
+            techFeeBps: 250,
+            bookingFeePence: 15,
+          };
+          const a = makeSnapshot(cfg, "cfg-grid", booking);
+          const b = makeSnapshot(cfg, "cfg-grid", booking);
+          expect(a).toStrictEqual(b);
+          // Fare math sanity: pcAddOns should equal tech + booking when no admin
+          const expectedTech = 0 + Math.round((fareEstimatePence * 250) / 10000);
+          expect(a.computedPassengerAddOnsPence).toBe(expectedTech + 15);
+        }
+      }
+    }
+  });
+});

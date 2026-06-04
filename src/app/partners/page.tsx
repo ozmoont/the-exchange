@@ -28,7 +28,21 @@ async function setStatusAction(formData: FormData) {
   const [before] = await db.select().from(partners).where(eq(partners.id, id));
   if (!before) return;
 
-  await db.update(partners).set({ status: next, updatedAt: new Date() }).where(eq(partners.id, id));
+  // P1-E3 idempotency: if the admin is re-activating a partner that auto-
+  // suspend caught, set a 7-day cooldown so we don't immediately re-suspend
+  // on the same stale acceptance metrics. Doesn't apply when going to
+  // statuses other than 'active'.
+  const COOLDOWN_DAYS = 7;
+  const updateFields: { status: typeof next; updatedAt: Date; autoSuspendCooldownUntil?: Date; statusReason?: null } = {
+    status: next,
+    updatedAt: new Date(),
+  };
+  if (next === "active" && (before.status === "suspended" || before.status === "warning")) {
+    updateFields.autoSuspendCooldownUntil = new Date(Date.now() + COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
+    updateFields.statusReason = null;
+  }
+
+  await db.update(partners).set(updateFields).where(eq(partners.id, id));
 
   await db.insert(auditLog).values({
     category: "admin",
@@ -38,7 +52,12 @@ async function setStatusAction(formData: FormData) {
     subjectType: "partner",
     subjectId: id,
     before: { status: before.status },
-    after: { status: next },
+    after: {
+      status: next,
+      ...(updateFields.autoSuspendCooldownUntil
+        ? { autoSuspendCooldownUntil: updateFields.autoSuspendCooldownUntil.toISOString() }
+        : {}),
+    },
   });
 
   revalidatePath("/partners");
