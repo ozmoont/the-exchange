@@ -9,6 +9,7 @@ import { requireUser } from "@/lib/auth";
 import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 import { RoutingTrace } from "@/components/routing-trace";
 import { AcceptCountdown } from "@/components/accept-countdown";
+import { canSeeDriverDetail, DRIVER_DETAILS_HIDDEN_EXPLAINER } from "@/lib/pii";
 
 export const dynamic = "force-dynamic";
 
@@ -147,7 +148,12 @@ export default async function TransitDetailPage({
     const d = e.detail as Record<string, unknown> | null;
     return d && d.driver && typeof d.driver === "object";
   });
-  const driverDetail = driverEvent?.detail as DriverEventDetail | undefined;
+  const rawDriverDetail = driverEvent?.detail as DriverEventDetail | undefined;
+  // PII gate: originator-side viewers only see driver detail when the
+  // originator partner has driverDetailsRequired=true. Recipients always see
+  // their own driver. Super admins see everything.
+  const driverDetailVisible = canSeeDriverDetail(user, transit, originator ?? null);
+  const driverDetail = driverDetailVisible ? rawDriverDetail : undefined;
 
   // Resolve partner names for the routing trace. Pull every recipientId that
   // appears in waterfallAttempts in one query.
@@ -238,6 +244,12 @@ export default async function TransitDetailPage({
       </div>
 
       {driverDetail && <DriverPanel driver={driverDetail} />}
+      {!driverDetailVisible && rawDriverDetail && (
+        <div className="card p-4 bg-surface-muted/40 text-sm text-ink-muted flex items-center gap-2">
+          <span aria-hidden className="text-lg">🔒</span>
+          <span>{DRIVER_DETAILS_HIDDEN_EXPLAINER}</span>
+        </div>
+      )}
 
       {canSimulate && !isTerminal && transit.recipientPartnerId && (
         <section className="card bg-warning/60 border-yellow-400 p-5">

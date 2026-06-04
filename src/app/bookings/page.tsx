@@ -12,6 +12,7 @@ import {
   statusMeta,
   type StatusGroup,
 } from "@/lib/status-labels";
+import { canSeeDriverDetail } from "@/lib/pii";
 
 export const dynamic = "force-dynamic";
 
@@ -222,7 +223,12 @@ export default async function BookingsPage({
                 const isHighlighted = t.id === highlight;
                 const recipient = t.recipientPartnerId ? recipientById.get(t.recipientPartnerId) : null;
                 const bp = (t.bookingPayload ?? {}) as BookingPayload;
-                const driver = driverByTransit.get(t.id);
+                const rawDriver = driverByTransit.get(t.id);
+                // PII gate: this viewer might be the originator of a booking
+                // whose recipient hasn't opted in to driver-detail sharing.
+                // canSeeDriverDetail uses the ORIGINATOR partner's flag
+                // (per strategy decision #10: per-fleet config on the demand side).
+                const driver = rawDriver && canSeeDriverDetail(user, t, originator) ? rawDriver : undefined;
 
                 const isPrebook = bp.bookingType === "prebook" && bp.scheduledFor;
                 const pickupTime = isPrebook ? new Date(bp.scheduledFor as string) : null;
