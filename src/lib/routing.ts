@@ -67,6 +67,11 @@ export async function routeBooking(args: {
   let winnerRecipientId: string | null = null;
   let winnerFeeSnapshot: FeeSnapshot | null = null;
   let winnerExternalId: string | null = null;
+  let winnerPartnershipCoid: string | null = null;
+  let winnerRecipientClientId: string | null = null;
+  let winnerRecipientServerName: string | null = null;
+  let winnerRecipientSiteId: string | null = null;
+  let winnerTrackMyTaxiLink: string | null = null;
 
   for (let i = 0; i < Math.min(MAX_WATERFALL, candidates.length); i++) {
     const c = candidates[i];
@@ -89,6 +94,15 @@ export async function routeBooking(args: {
       winnerRecipientId = c.recipientId;
       winnerFeeSnapshot = c.fee;
       winnerExternalId = result.externalId;
+      if (result.partnership) {
+        winnerPartnershipCoid = result.partnership.coid ?? null;
+        winnerRecipientClientId = result.partnership.clientId ?? null;
+        winnerRecipientServerName = result.partnership.serverName ?? null;
+        winnerRecipientSiteId = result.partnership.siteId ?? null;
+      }
+      if (result.trackMyTaxiLink) {
+        winnerTrackMyTaxiLink = result.trackMyTaxiLink;
+      }
       break;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -136,6 +150,11 @@ export async function routeBooking(args: {
     feeSnapshot: winnerFeeSnapshot,
     routingTrace,
     status: "pushed",
+    partnershipCoid: winnerPartnershipCoid,
+    recipientClientId: winnerRecipientClientId,
+    recipientServerName: winnerRecipientServerName,
+    recipientSiteId: winnerRecipientSiteId,
+    trackMyTaxiLink: winnerTrackMyTaxiLink,
     updatedAt: new Date(),
   }).where(eq(transits.id, transit.id));
 

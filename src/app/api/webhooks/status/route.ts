@@ -57,11 +57,13 @@ function normaliseStatus(s: string) {
   const map: Record<string, string> = {
     accepted: "accepted",
     driver_assigned: "driver_assigned",
+    driver_arrived: "driver_arrived",
     en_route: "en_route",
     on_board: "on_board",
     completed: "completed",
     cancelled: "cancelled",
     failed: "failed",
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (map[s] ?? "error_other") as any;
 }

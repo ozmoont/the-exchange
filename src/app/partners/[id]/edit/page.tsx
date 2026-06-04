@@ -46,6 +46,7 @@ async function savePartnerAction(formData: FormData) {
     ),
     adapterKey: String(formData.get("adapterKey") ?? existing.adapterKey),
     webhookUrl: nullable(formData.get("webhookUrl")),
+    driverDetailsRequired: formData.get("driverDetailsRequired") === "on",
     billingNotes: nullable(formData.get("billingNotes")),
     updatedAt: new Date(),
   };
@@ -216,6 +217,22 @@ export default async function EditPartnerPage({
               className="input"
               placeholder="https://partner.example.com/webhooks/exchange"
             />
+          </Field>
+          <Field
+            label="Driver details visibility"
+            hint="When enabled, driver name, mobile, and vehicle registration are passed back to the demand fleet on status events. Enable for corporate / VIP / regulated accounts that require this. Most fleets should leave it off — PII minimisation default."
+          >
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="driverDetailsRequired"
+                defaultChecked={partner.driverDetailsRequired}
+                className="h-4 w-4 rounded border-border-strong"
+              />
+              <span>
+                Pass driver name / phone / vehicle reg through to demand fleet
+              </span>
+            </label>
           </Field>
         </Section>
 
