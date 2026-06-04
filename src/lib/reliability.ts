@@ -44,11 +44,11 @@ export type PartnerReliability = {
  * number of partners updated.
  */
 export async function recomputeAllPartnerReliability(): Promise<number> {
-  const cutoff = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
-
   // Per-partner aggregates over the window. We compute everything in a single
   // round-trip via GROUP BY — 100 active partners returns 100 rows in <50ms
-  // on Neon.
+  // on Neon. Window is expressed inline via Postgres `now() - interval` so we
+  // don't have to pass a JS Date as a parameter (postgres.js's drizzle wrapper
+  // doesn't bind Date objects cleanly).
   const rows = await db.execute<{
     partnerId: string;
     totalPushed: number;
@@ -56,7 +56,7 @@ export async function recomputeAllPartnerReliability(): Promise<number> {
     totalCompleted: number;
     totalRerouted: number;
     medianAcceptanceMs: number | null;
-  }>(sql`
+  }>(sql.raw(`
     WITH pushed AS (
       SELECT
         t.recipient_partner_id AS partner_id,
@@ -78,7 +78,7 @@ export async function recomputeAllPartnerReliability(): Promise<number> {
         ) AS accepted_at
       FROM transits t
       WHERE t.recipient_partner_id IS NOT NULL
-        AND t.created_at > ${cutoff}
+        AND t.created_at > now() - interval '${WINDOW_DAYS} days'
     )
     SELECT
       partner_id                                                     AS "partnerId",
@@ -93,7 +93,7 @@ export async function recomputeAllPartnerReliability(): Promise<number> {
       )::int                                                         AS "medianAcceptanceMs"
     FROM pushed
     GROUP BY partner_id
-  `);
+  `));
 
   // drizzle returns the rows directly (no `.rows` wrapper) for postgres.js
   const aggregated = (rows as unknown as Array<{
