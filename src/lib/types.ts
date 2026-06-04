@@ -154,4 +154,30 @@ export interface PartnerAdapter {
     | { kind: "status"; recipientBookingExternalId: string; newStatus: string; detail?: Record<string, unknown> }
     | null
   >;
+
+  /**
+   * Optional. Fetch the partner's final billed totals for a completed
+   * booking, used by the reconciliation engine to compare against our
+   * feeSnapshot. Adapters that can't easily fetch this (e.g. webhook-only
+   * partners) leave it undefined.
+   *
+   * Returns pence, never decimal — caller is responsible for currency
+   * conversion if mixing GBP/EUR.
+   */
+  fetchBookingPayment?(externalId: string): Promise<BookingPaymentSummary | null>;
 }
+
+export type BookingPaymentSummary = {
+  /** What the partner billed in total for this booking, in pence. */
+  totalPence: number;
+  /** Their internal payment status ('PROCESSED', 'NEW', etc.) — informational. */
+  status?: string;
+  /** Fee surfaced separately (e.g. iCabbi's 'fee' field). */
+  feePence?: number;
+  /** Processing fee surfaced separately (e.g. iCabbi's 'processing_fee'). */
+  processingFeePence?: number;
+  /** Whether this was a fixed-price booking. */
+  fixedFare?: boolean;
+  /** Tariff id if relevant. */
+  tariffId?: string;
+};

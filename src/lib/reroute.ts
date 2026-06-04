@@ -27,7 +27,7 @@ import { db } from "@/db/client";
 import { transits, transitEvents, auditLog, partners } from "@/db/schema";
 import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { getAdapterForPartner } from "@/adapters/registry";
-import { rankCandidates, acceptDeadlineFor, forwardStatusUpdate } from "@/lib/routing";
+import { rankCandidates, acceptDeadlineFor, forwardStatusUpdate, routeBooking } from "@/lib/routing";
 import { resolveFeeSnapshot } from "@/lib/fees";
 import type { NormalisedBooking } from "@/lib/types";
 import type { FeeSnapshot } from "@/db/schema";
@@ -255,4 +255,75 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
   });
 
   return { transitId: t.id, outcome: "rerouted", newRecipientId: next.recipientId };
+}
+
+// ---------------------------------------------------------------------------
+// Kill-switch resume — Gap #1 in FAILURE_MODES.md
+// ---------------------------------------------------------------------------
+//
+// When the kill switch engages, new bookings get parked at status='paused'.
+// When it disengages, we replay routeBooking() on every paused transit so
+// they don't strand. routeBooking is idempotent on
+// (originator, originatorBookingExternalId) — `insertTransit` returns the
+// existing row instead of creating a duplicate — so calling it again just
+// updates the same transit row in place.
+//
+// Outcomes: each paused transit ends up in one of {pushed, no_match, paused,
+// error}. If routing still fails on the second try (e.g. fleet that would
+// have taken it has since suspended), the transit progresses to its honest
+// terminal state. We never leave bookings stranded at 'paused' once the
+// kill switch is off.
+
+export type ResumeOutcomes = {
+  scanned: number;
+  pushed: number;
+  no_match: number;
+  paused: number; // re-paused — kill switch flipped back on between scan and route
+  error: number;
+};
+
+export async function resumePausedTransits(actor: string): Promise<ResumeOutcomes> {
+  const paused = await db
+    .select()
+    .from(transits)
+    .where(eq(transits.status, "paused"))
+    .limit(500);
+
+  const outcomes: ResumeOutcomes = {
+    scanned: paused.length,
+    pushed: 0,
+    no_match: 0,
+    paused: 0,
+    error: 0,
+  };
+
+  for (const t of paused) {
+    try {
+      const booking = t.bookingPayload as unknown as NormalisedBooking;
+      const result = await routeBooking({
+        originatorPartnerId: t.originatorPartnerId,
+        booking,
+      });
+      outcomes[result.outcome]++;
+
+      await db.insert(auditLog).values({
+        category: "booking",
+        actor: "system",
+        actorRef: actor,
+        action: "transit.resumed_from_paused",
+        subjectType: "transit",
+        subjectId: t.id,
+        before: { status: "paused" },
+        after: { outcome: result.outcome },
+      });
+    } catch (err) {
+      outcomes.error++;
+      console.error(
+        `[resume] transit ${t.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return outcomes;
 }

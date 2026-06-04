@@ -427,7 +427,29 @@ export async function forwardStatusUpdate(args: {
   }
 }
 
-export async function setKillSwitch(on: boolean, reason: string, actor: string) {
+/**
+ * Type returned by setKillSwitch to surface the resume outcome to callers.
+ * `resumed` is only populated when toggling the switch OFF — it tells the
+ * caller how many paused transits got re-routed and what happened to each.
+ */
+export type SetKillSwitchResult = {
+  /** New state of the switch. */
+  on: boolean;
+  /** Only populated when `on === false` and we ran the resume. */
+  resumed?: {
+    scanned: number;
+    pushed: number;
+    no_match: number;
+    paused: number;
+    error: number;
+  };
+};
+
+export async function setKillSwitch(
+  on: boolean,
+  reason: string,
+  actor: string,
+): Promise<SetKillSwitchResult> {
   const [existing] = await db.select().from(networkControls).where(eq(networkControls.id, "global"));
   const before = existing ?? null;
   const after = {
@@ -454,4 +476,29 @@ export async function setKillSwitch(on: boolean, reason: string, actor: string) 
     before,
     after,
   });
+
+  // When the switch goes OFF, replay paused transits so they don't strand.
+  // Dynamic import to avoid the circular dependency with lib/reroute.ts.
+  if (!on) {
+    try {
+      const { resumePausedTransits } = await import("@/lib/reroute");
+      const resumed = await resumePausedTransits(actor);
+      if (resumed.scanned > 0) {
+        console.log(
+          `[kill_switch.off] resumed ${resumed.scanned} paused transit(s): ` +
+            `pushed=${resumed.pushed} no_match=${resumed.no_match} error=${resumed.error}`,
+        );
+      }
+      return { on, resumed };
+    } catch (err) {
+      // Don't fail the kill-switch toggle if resume blows up. Log the error
+      // and the admin can manually resume via the upcoming admin button.
+      console.error(
+        "[kill_switch.off] resume failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return { on };
 }

@@ -278,6 +278,60 @@ export default async function TransitDetailPage({
         </div>
       )}
 
+      {/* Reconciliation — only show if we've run it on this transit */}
+      {transit.reconciledAt && (
+        <Section
+          title={
+            transit.reconciledFlagged
+              ? "Reconciliation — flagged for review"
+              : "Reconciliation"
+          }
+        >
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-subtle font-semibold">
+                Originator billed
+              </div>
+              <div className="text-lg font-bold tabular-nums mt-0.5">
+                {fmtPence(transit.reconciledOriginatorTotalPence)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-subtle font-semibold">
+                Recipient billed
+              </div>
+              <div className="text-lg font-bold tabular-nums mt-0.5">
+                {fmtPence(transit.reconciledRecipientTotalPence)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-subtle font-semibold">
+                Drift
+              </div>
+              <div
+                className={`text-lg font-bold tabular-nums mt-0.5 ${
+                  transit.reconciledFlagged ? "text-red-700" : "text-ink"
+                }`}
+              >
+                {fmtPence(transit.reconciledDriftPence)}
+              </div>
+            </div>
+          </div>
+          {transit.reconciledFlagged && (
+            <p className="mt-3 text-xs text-red-700">
+              Drift exceeds the 5% threshold — review the fee snapshot against
+              both partners&apos; payment records. Likely causes: different tariff,
+              surcharges, or processing fees added on one side.
+            </p>
+          )}
+          <p className="mt-2 text-xs text-ink-subtle">
+            Reconciled {new Date(transit.reconciledAt).toLocaleString()} ·
+            Compared to feeSnapshot.receiveFeePence ={" "}
+            <code>{transit.feeSnapshot?.receiveFeePence ?? "—"}p</code>
+          </p>
+        </Section>
+      )}
+
       <Section title="Routing decision">
         <RoutingTrace trace={transit.routingTrace} partnerNames={partnerNames} />
       </Section>
@@ -332,6 +386,11 @@ function SimulateButton({
       </button>
     </form>
   );
+}
+
+function fmtPence(p: number | null | undefined): string {
+  if (p == null) return "—";
+  return p >= 100 ? `£${(p / 100).toFixed(2)}` : `${p}p`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

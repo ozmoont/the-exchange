@@ -1,25 +1,43 @@
 import Link from "next/link";
 import { db } from "@/db/client";
 import { partners, transits, networkControls, auditLog } from "@/db/schema";
-import { count, desc, eq, gte } from "drizzle-orm";
+import { and, count, desc, eq, gte } from "drizzle-orm";
 import { setKillSwitch } from "@/lib/routing";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { LiveRefresh } from "@/components/live-refresh";
 import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 
 export const dynamic = "force-dynamic";
 
-export default async function RootPage() {
+export default async function RootPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await getCurrentUser();
   if (!user) return <LandingPage />;
+  const sp = await searchParams;
   return (
     <Dashboard
       userEmail={user.email}
       isSuperAdmin={user.role === "super_admin"}
       scopedPartnerId={user.partnerId}
+      resumeBanner={parseResumeBanner(sp)}
     />
   );
+}
+
+function parseResumeBanner(sp: Record<string, string | string[] | undefined>) {
+  const resumed = Number(sp.resumed);
+  if (!Number.isFinite(resumed) || resumed <= 0) return null;
+  return {
+    resumed,
+    pushed: Number(sp.pushed) || 0,
+    no_match: Number(sp.no_match) || 0,
+    error: Number(sp.error) || 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,10 +201,12 @@ async function Dashboard({
   userEmail,
   isSuperAdmin,
   scopedPartnerId,
+  resumeBanner,
 }: {
   userEmail: string;
   isSuperAdmin: boolean;
   scopedPartnerId: string | null;
+  resumeBanner: { resumed: number; pushed: number; no_match: number; error: number } | null;
 }) {
   const partnerCountRows = await db
     .select({ n: count() })
@@ -247,10 +267,57 @@ async function Dashboard({
       )
     : 0;
 
+  // Reconciliation drift flags (super admin only) — completed bookings where
+  // the two partners' billed totals disagreed with our feeSnapshot beyond 5%.
+  const flaggedReconciliationsCount = isSuperAdmin
+    ? Number(
+        (
+          await db
+            .select({ n: count() })
+            .from(transits)
+            .where(eq(transits.reconciledFlagged, true))
+        )[0]?.n ?? 0,
+      )
+    : 0;
+
+  // Auto-suspended partners in the last 7 days — super admin should review.
+  const autoSuspendedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const autoSuspendedCount = isSuperAdmin
+    ? Number(
+        (
+          await db
+            .select({ n: count() })
+            .from(auditLog)
+            .where(
+              and(
+                eq(auditLog.action, "partner.auto_suspended"),
+                gte(auditLog.createdAt, autoSuspendedSince),
+              ),
+            )
+        )[0]?.n ?? 0,
+      )
+    : 0;
+
   async function toggleKill() {
     "use server";
-    await setKillSwitch(!killOn, killOn ? "manual_off" : "manual_on", userEmail);
+    const result = await setKillSwitch(
+      !killOn,
+      killOn ? "manual_off" : "manual_on",
+      userEmail,
+    );
     revalidatePath("/");
+    // When toggling OFF and there were paused transits to resume, surface the
+    // outcome via query param so the dashboard can render a one-shot banner.
+    if (!result.on && result.resumed && result.resumed.scanned > 0) {
+      const r = result.resumed;
+      const params = new URLSearchParams({
+        resumed: String(r.scanned),
+        pushed: String(r.pushed),
+        no_match: String(r.no_match),
+        error: String(r.error),
+      });
+      redirect(`/?${params}`);
+    }
   }
 
   return (
@@ -281,6 +348,66 @@ async function Dashboard({
         <StatCardLink label="Completed" value={completed} tone="success" href="/bookings?group=completed" />
         <StatCardLink label="Failed / no match" value={failed} tone={failed > 0 ? "danger" : "neutral"} href="/bookings?group=no_match" />
       </div>
+
+      {resumeBanner && (
+        <div className="card p-4 bg-success/30 border-l-4 border-l-green-500 flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-success-fg font-semibold">
+              Paused bookings resumed
+            </div>
+            <div className="text-lg font-bold mt-1">
+              {resumeBanner.resumed} booking{resumeBanner.resumed === 1 ? "" : "s"} replayed through routing
+            </div>
+            <p className="text-xs text-ink-muted mt-1">
+              <strong>{resumeBanner.pushed}</strong> sent to a fleet
+              {" · "}
+              <strong>{resumeBanner.no_match}</strong> no match
+              {resumeBanner.error > 0 ? <> · <strong>{resumeBanner.error}</strong> errors</> : null}
+            </p>
+          </div>
+          <Link href="/" className="text-xs text-ink-muted underline">dismiss</Link>
+        </div>
+      )}
+
+      {isSuperAdmin && autoSuspendedCount > 0 && (
+        <Link
+          href="/partners"
+          className="card p-4 flex items-center justify-between gap-4 bg-warning/40 border-l-4 border-l-amber-500 hover:bg-warning/50 transition-colors"
+        >
+          <div>
+            <div className="text-xs uppercase tracking-wide text-warning-fg font-semibold">
+              Auto-suspended partners
+            </div>
+            <div className="text-lg font-bold mt-1 text-warning-fg">
+              {autoSuspendedCount} fleet{autoSuspendedCount === 1 ? "" : "s"} auto-suspended in the last 7 days
+            </div>
+            <p className="text-xs text-ink-muted mt-1">
+              Acceptance rate fell below 40% over 50+ bookings. Review on the partner page and re-activate manually if appropriate.
+            </p>
+          </div>
+          <span className="text-sm text-warning-fg font-semibold">Review →</span>
+        </Link>
+      )}
+
+      {isSuperAdmin && flaggedReconciliationsCount > 0 && (
+        <Link
+          href="/bookings?status=completed"
+          className="card p-4 flex items-center justify-between gap-4 bg-danger/30 border-l-4 border-l-red-500 hover:bg-danger/40 transition-colors"
+        >
+          <div>
+            <div className="text-xs uppercase tracking-wide text-red-800 font-semibold">
+              Reconciliation drift
+            </div>
+            <div className="text-lg font-bold mt-1 text-red-900">
+              {flaggedReconciliationsCount} booking{flaggedReconciliationsCount === 1 ? "" : "s"} flagged for review
+            </div>
+            <p className="text-xs text-ink-muted mt-1">
+              Partners&apos; billed totals disagreed with our fee snapshot by more than 5%.
+            </p>
+          </div>
+          <span className="text-sm text-red-800 font-semibold">Review →</span>
+        </Link>
+      )}
 
       {isSuperAdmin && pendingSignupsCount > 0 && (
         <Link

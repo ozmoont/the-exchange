@@ -5,6 +5,7 @@ import type {
   CancelBookingInput,
   NormalisedBooking,
   BookingPoint,
+  BookingPaymentSummary,
 } from "@/lib/types";
 import { mapICabbiStatus, isIgnoredICabbiStatus } from "@/lib/icabbi-status-map";
 
@@ -205,6 +206,42 @@ export class ICabbiAdapter implements PartnerAdapter {
 
   async normaliseInboundWebhook(payload: Record<string, unknown>) {
     return parseInboundEvent(payload);
+  }
+
+  async fetchBookingPayment(externalId: string): Promise<BookingPaymentSummary | null> {
+    try {
+      const path = `/bookings/${encodeURIComponent(externalId)}`;
+      const res = await fetch(`${this.baseUrl()}${path}`, {
+        method: "GET",
+        headers: this.headers(),
+      });
+      if (!res.ok) return null;
+      const text = await res.text();
+      const json = text ? (JSON.parse(text) as unknown) : null;
+
+      const envelope = json as { body?: { booking?: Record<string, unknown> } } | null;
+      const booking = envelope?.body?.booking;
+      if (!booking) return null;
+
+      const payment = (booking.payment ?? {}) as Record<string, unknown>;
+      const totalGbp = Number(payment.total ?? payment.cost ?? 0);
+      const feeGbp = Number(payment.fee ?? 0);
+      const processingFeeGbp = Number(payment.processing_fee ?? 0);
+
+      return {
+        totalPence: Math.round(totalGbp * 100),
+        status: typeof payment.status === "string" ? payment.status : undefined,
+        feePence: Math.round(feeGbp * 100),
+        processingFeePence: Math.round(processingFeeGbp * 100),
+        fixedFare: Number(payment.fixed ?? 0) === 1,
+        tariffId:
+          payment.tariff_id != null && Number(payment.tariff_id) > 0
+            ? String(payment.tariff_id)
+            : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
 
   // ---------- internals ----------

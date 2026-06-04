@@ -224,7 +224,19 @@ export default async function PartnerDetailPage({ params }: { params: Promise<{ 
       <div className="grid md:grid-cols-2 gap-6">
         <Section title="Configuration">
           <KV k="Mode" v={partner.participationMode.replace(/_/g, " ")} />
-          <KV k="Status" v={<StatusBadge status={partner.status} />} />
+          <KV
+            k="Status"
+            v={
+              <span className="flex items-center gap-2 flex-wrap">
+                <StatusBadge status={partner.status} />
+                {partner.statusReason && (
+                  <code className="text-[10px] text-ink-subtle" title="Reason this partner is in this status">
+                    {partner.statusReason}
+                  </code>
+                )}
+              </span>
+            }
+          />
           <KV k="Regions" v={partner.operatingRegions.join(", ") || "—"} />
           <KV k="Vehicles" v={partner.vehicleTypes.join(", ") || "—"} />
           <KV k="Booking types" v={partner.bookingTypes.join(", ")} />

@@ -172,9 +172,18 @@ export async function maybeRecomputeReliability(): Promise<void> {
     if (updated > 0) {
       console.log(`[reliability] recomputed metrics for ${updated} partner(s)`);
     }
+    // After fresh metrics land, enforce thresholds. Dynamic import keeps the
+    // auto-suspend logic decoupled (and easy to disable for replays/imports).
+    const { enforceReliabilityThresholds } = await import("@/lib/auto-suspend");
+    const outcome = await enforceReliabilityThresholds();
+    if (outcome.warned > 0 || outcome.suspended > 0) {
+      console.log(
+        `[auto-suspend] scanned=${outcome.scanned} warned=${outcome.warned} suspended=${outcome.suspended}`,
+      );
+    }
   } catch (err) {
     console.warn(
-      "[reliability] recompute failed:",
+      "[reliability] recompute / threshold check failed:",
       err instanceof Error ? err.message : err,
     );
   }

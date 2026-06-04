@@ -74,6 +74,11 @@ export const partners = pgTable("partners", {
     .notNull()
     .default("inactive"),
   status: partnerStatusEnum("status").notNull().default("pending_approval"),
+  // Why the partner is in their current status. For auto-suspend, holds a
+  // machine-readable reason like 'acceptance_rate_0.37_over_67_pushed_7d'.
+  // For manual status changes, optional freeform note from the admin.
+  // Null on pristine partners that have only ever had their default status.
+  statusReason: text("status_reason"),
   // operational rules — see notes below
   operatingRegions: jsonb("operating_regions").$type<string[]>().notNull().default([]),
   serviceZones: jsonb("service_zones").$type<string[]>().notNull().default([]),
@@ -225,6 +230,19 @@ export const transits = pgTable("transits", {
   // How many times this booking has been auto-rerouted. 0 = first push.
   rerouteCount: integer("reroute_count").notNull().default(0),
 
+  // ---------- post-completion reconciliation ----------
+  // After a booking reaches 'completed' we ask both adapters what they
+  // actually billed for the trip. We compare to feeSnapshot to detect
+  // drift — useful when partners use different tariff IDs, surcharges, or
+  // processing fees. Real iCabbi data exposed this: the demand side had a
+  // £10 processing_fee that didn't appear on the supply side. We flag drift
+  // > 5% for super-admin review.
+  reconciledAt: timestamp("reconciled_at"),
+  reconciledOriginatorTotalPence: integer("reconciled_originator_total_pence"),
+  reconciledRecipientTotalPence: integer("reconciled_recipient_total_pence"),
+  reconciledDriftPence: integer("reconciled_drift_pence"),
+  reconciledFlagged: boolean("reconciled_flagged").notNull().default(false),
+
   status: transitStatusEnum("status").notNull().default("received"),
 
   // full inbound payload from the originator (denormalised on purpose for audit)
@@ -316,6 +334,8 @@ export const networkControls = pgTable("network_controls", {
   lastDemoTickAt: timestamp("last_demo_tick_at"),
   // Last time we recomputed per-partner reliability metrics. 5-min cooldown.
   lastReliabilityComputeAt: timestamp("last_reliability_compute_at"),
+  // Last time we ran the post-completion reconciliation pass. 1-hour cooldown.
+  lastReconciliationRunAt: timestamp("last_reconciliation_run_at"),
 });
 
 // ---------- auth ----------

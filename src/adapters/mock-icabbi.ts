@@ -4,6 +4,7 @@ import type {
   CreateBookingResult,
   CancelBookingInput,
   NormalisedBooking,
+  BookingPaymentSummary,
 } from "@/lib/types";
 
 /**
@@ -32,7 +33,28 @@ export class MockICabbiAdapter implements PartnerAdapter {
     console.log(`[MockICabbi:${this.tenantLabel}] cancelBooking ${externalId} reason="${reason}"`);
   }
 
+  async fetchBookingPayment(externalId: string): Promise<BookingPaymentSummary | null> {
+    // Mock: synthesise a payment from the externalId so demo reconciliation
+    // has something to compare against. We jitter by ±15% to make the drift
+    // detection visible during demos (some bookings will exceed the 5%
+    // threshold and get flagged).
+    await new Promise((r) => setTimeout(r, 30));
+    const seed = hashToFloat(externalId);
+    const baseGbp = 5 + seed * 30; // £5–£35
+    const jitter = (Math.random() - 0.5) * 0.3; // ±15%
+    const totalPence = Math.round((baseGbp + baseGbp * jitter) * 100);
+    return {
+      totalPence,
+      status: "PROCESSED",
+      feePence: 20,
+      processingFeePence: 0,
+      fixedFare: seed > 0.5,
+    };
+  }
+
   async normaliseInboundWebhook(payload: Record<string, unknown>) {
+    // Note: this is mock-specific. The real iCabbi adapter handles the full
+    // shape catalogue (Karhoo envelope, direct booking object).
     // For the mock we accept two shapes:
     //   { type: "booking.network_send", booking: {...} } -> create
     //   { type: "booking.status_update", recipientBookingExternalId, status } -> status
@@ -65,4 +87,11 @@ export class MockICabbiAdapter implements PartnerAdapter {
     }
     return null;
   }
+}
+
+// Deterministic [0,1) hash for the mock fee jitter
+function hashToFloat(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) & 0xffffffff;
+  return (Math.abs(h) % 1000) / 1000;
 }

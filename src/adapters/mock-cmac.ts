@@ -3,6 +3,7 @@ import type {
   CreateBookingInput,
   CreateBookingResult,
   CancelBookingInput,
+  BookingPaymentSummary,
 } from "@/lib/types";
 
 /**
@@ -26,6 +27,23 @@ export class MockCMACAdapter implements PartnerAdapter {
 
   async cancelBooking({ externalId, reason }: CancelBookingInput): Promise<void> {
     console.log(`[MockCMAC] cancelBooking ${externalId} reason="${reason}"`);
+  }
+
+  async fetchBookingPayment(externalId: string): Promise<BookingPaymentSummary | null> {
+    // Mock — same approach as MockICabbi but slightly different jitter so
+    // CMAC-side numbers don't perfectly mirror iCabbi-side ones during demos.
+    let h = 1469598103;
+    for (let i = 0; i < externalId.length; i++) h = ((h * 31) + externalId.charCodeAt(i)) | 0;
+    const seed = (Math.abs(h) % 1000) / 1000;
+    const baseGbp = 8 + seed * 40; // £8–£48 (corporate skews higher)
+    const totalPence = Math.round(baseGbp * 100);
+    return {
+      totalPence,
+      status: "INVOICED",
+      feePence: 50,
+      processingFeePence: 100,
+      fixedFare: true,
+    };
   }
 
   async normaliseInboundWebhook(payload: Record<string, unknown>) {

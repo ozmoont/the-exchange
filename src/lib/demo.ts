@@ -82,6 +82,15 @@ export async function maybeTickDemoMode(): Promise<void> {
   } catch (err) {
     console.warn("[demo] reliability compute failed:", err instanceof Error ? err.message : err);
   }
+
+  // Hourly reconciliation pass — compare both sides' billed totals to our
+  // feeSnapshot, flag drift > 5% for super-admin review.
+  try {
+    const { maybeReconcileCompletedTransits } = await import("@/lib/reconciliation");
+    await maybeReconcileCompletedTransits();
+  } catch (err) {
+    console.warn("[demo] reconciliation failed:", err instanceof Error ? err.message : err);
+  }
 }
 
 async function tickOnce(): Promise<void> {
