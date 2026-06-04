@@ -58,6 +58,20 @@ export async function maybeTickDemoMode(): Promise<void> {
   } catch (err) {
     console.warn("[demo] tick failed:", err instanceof Error ? err.message : err);
   }
+
+  // Also enforce the acceptance window. In production this will be a Vercel
+  // cron; for demo mode we piggyback on the same cooldown so the dashboard
+  // shows live reroutes happening alongside the lifecycle advances.
+  try {
+    const { recheckStaleAcceptances } = await import("@/lib/reroute");
+    const outcomes = await recheckStaleAcceptances();
+    if (outcomes.length > 0) {
+      const rerouted = outcomes.filter((o) => o.outcome === "rerouted").length;
+      if (rerouted > 0) console.log(`[demo] rerouted ${rerouted} stale-accept transit(s)`);
+    }
+  } catch (err) {
+    console.warn("[demo] reroute check failed:", err instanceof Error ? err.message : err);
+  }
 }
 
 async function tickOnce(): Promise<void> {

@@ -8,6 +8,7 @@ import { forwardStatusUpdate } from "@/lib/routing";
 import { requireUser } from "@/lib/auth";
 import { statusBadgeClass, statusLabel, statusMeta } from "@/lib/status-labels";
 import { RoutingTrace } from "@/components/routing-trace";
+import { AcceptCountdown } from "@/components/accept-countdown";
 
 export const dynamic = "force-dynamic";
 
@@ -185,7 +186,22 @@ export default async function TransitDetailPage({
 
       <div className="grid md:grid-cols-2 gap-6">
         <Section title="Route">
-          <KV k="Status" v={<StatusBadge status={transit.status} />} />
+          <KV
+            k="Status"
+            v={
+              <span className="flex items-center gap-2 flex-wrap">
+                <StatusBadge status={transit.status} />
+                {transit.status === "pushed" && transit.acceptDeadline && (
+                  <AcceptCountdown deadlineIso={new Date(transit.acceptDeadline).toISOString()} />
+                )}
+                {transit.rerouteCount > 0 && (
+                  <span className="text-xs text-ink-muted">
+                    · auto-rerouted {transit.rerouteCount}×
+                  </span>
+                )}
+              </span>
+            }
+          />
           <KV
             k="Originator"
             v={originator ? <Link href={`/partners/${originator.id}`} className="text-ink hover:underline">{originator.name}</Link> : "—"}

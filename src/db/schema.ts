@@ -189,6 +189,16 @@ export const transits = pgTable("transits", {
   // their existing tracking experience.
   trackMyTaxiLink: text("track_my_taxi_link"),
 
+  // Acceptance window. Set when status moves to 'pushed' (initial route or
+  // re-route) — recipient must move past 'pushed' before this timestamp or
+  // the recheckStaleAcceptances() job will reroute to the next candidate.
+  // Cleared by forwardStatusUpdate once the booking advances. NULL on
+  // bookings that never reached 'pushed' (no_match, paused, etc.) and on
+  // bookings that successfully advanced.
+  acceptDeadline: timestamp("accept_deadline"),
+  // How many times this booking has been auto-rerouted. 0 = first push.
+  rerouteCount: integer("reroute_count").notNull().default(0),
+
   status: transitStatusEnum("status").notNull().default("received"),
 
   // full inbound payload from the originator (denormalised on purpose for audit)

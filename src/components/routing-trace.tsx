@@ -22,9 +22,21 @@ type Attempt = {
   error?: string;
 };
 
+type RerouteAttempt = {
+  recipientId: string;
+  rank?: number;
+  distanceKm?: number | null;
+  receiveFeePence?: number;
+  reason: string;
+  at: string;
+  success?: boolean;
+  error?: string;
+};
+
 type Trace = {
   consideredCount?: number;
   waterfallAttempts?: Attempt[];
+  rerouteAttempts?: RerouteAttempt[];
   winner?: string | null;
   pickupLat?: number;
   pickupLng?: number;
@@ -176,6 +188,54 @@ export function RoutingTrace({
           {considered - attempts.length} more eligible fleet
           {considered - attempts.length === 1 ? "" : "s"} not tried — winner found first.
         </p>
+      )}
+
+      {/* Auto-reroute history — fired after a fleet failed to accept in time */}
+      {t.rerouteAttempts && t.rerouteAttempts.length > 0 && (
+        <div className="pt-3 border-t border-border">
+          <p className="text-xs uppercase tracking-wide text-ink-subtle font-semibold mb-2">
+            Auto-reroutes after acceptance timeout
+          </p>
+          <ol className="space-y-2">
+            {t.rerouteAttempts.map((r, i) => (
+              <li
+                key={`reroute-${i}`}
+                className={`relative grid grid-cols-[42px_1fr] gap-3 rounded-md border p-3 ${
+                  r.success
+                    ? "border-amber-300 bg-warning/30"
+                    : "border-border bg-surface-muted/30"
+                }`}
+              >
+                <div className="flex flex-col items-center pt-0.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500 text-white text-xs font-semibold" title="Re-route attempt">
+                    ↻
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <Link
+                      href={`/partners/${r.recipientId}`}
+                      className="font-semibold text-sm hover:underline truncate"
+                    >
+                      {partnerNames.get(r.recipientId) ?? r.recipientId.slice(0, 8)}
+                    </Link>
+                    <span className="text-xs text-amber-900 font-medium">
+                      {r.success ? "Re-routed" : "Re-route failed"}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-ink-muted">
+                    Reason: <strong>{r.reason}</strong> · {new Date(r.at).toLocaleTimeString()}
+                  </div>
+                  {r.error && (
+                    <p className="mt-1 text-xs text-red-700 font-mono break-words">
+                      {r.error}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </div>
   );

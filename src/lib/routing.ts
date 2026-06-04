@@ -33,6 +33,21 @@ const FEE_PER_PENCE_WEIGHT = 1;
 const DISTANCE_KM_WEIGHT = 5;
 const MAX_WATERFALL = 5;
 
+/**
+ * Acceptance windows — how long a recipient has between us pushing the
+ * booking and them advancing it past `pushed` (to accepted or further). If
+ * the window expires, recheckStaleAcceptances() reroutes to the next
+ * candidate. Distinct windows for ASAP vs pre-book because pre-bookings are
+ * less time-pressured.
+ */
+export const ASAP_ACCEPT_WINDOW_MS = 90_000;        // 90 seconds
+export const PREBOOK_ACCEPT_WINDOW_MS = 5 * 60_000; // 5 minutes
+
+export function acceptDeadlineFor(bookingType: "asap" | "prebook"): Date {
+  const ms = bookingType === "prebook" ? PREBOOK_ACCEPT_WINDOW_MS : ASAP_ACCEPT_WINDOW_MS;
+  return new Date(Date.now() + ms);
+}
+
 export async function routeBooking(args: {
   originatorPartnerId: string;
   booking: NormalisedBooking;
@@ -155,6 +170,7 @@ export async function routeBooking(args: {
     recipientServerName: winnerRecipientServerName,
     recipientSiteId: winnerRecipientSiteId,
     trackMyTaxiLink: winnerTrackMyTaxiLink,
+    acceptDeadline: acceptDeadlineFor(booking.bookingType),
     updatedAt: new Date(),
   }).where(eq(transits.id, transit.id));
 
@@ -175,14 +191,14 @@ export async function routeBooking(args: {
 // Candidate ranking
 // ---------------------------------------------------------------------------
 
-type RankedCandidate = {
+export type RankedCandidate = {
   recipientId: string;
   fee: FeeSnapshot;
   distanceKm: number | null;
   score: number; // lower = better
 };
 
-async function rankCandidates(
+export async function rankCandidates(
   originatorPartnerId: string,
   booking: NormalisedBooking,
 ): Promise<RankedCandidate[]> {
@@ -351,7 +367,16 @@ export async function forwardStatusUpdate(args: {
   detail?: Record<string, unknown>;
 }) {
   const { transitId, newStatus, detail } = args;
-  await db.update(transits).set({ status: newStatus, updatedAt: new Date() }).where(eq(transits.id, transitId));
+  // When the booking advances past 'pushed' we clear the accept-deadline —
+  // the recipient committed in time, so the auto-reroute job can ignore it.
+  // Leave the deadline in place if the new status is 'pushed' itself
+  // (shouldn't happen via this path but be defensive).
+  const clearDeadline = newStatus !== "pushed" && newStatus !== "routing";
+  await db.update(transits).set({
+    status: newStatus,
+    updatedAt: new Date(),
+    ...(clearDeadline ? { acceptDeadline: null } : {}),
+  }).where(eq(transits.id, transitId));
   await db.insert(transitEvents).values({
     transitId,
     status: newStatus,
