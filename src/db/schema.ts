@@ -96,6 +96,13 @@ export const partners = pgTable("partners", {
   // back to the demand fleet on status events. Default false — most fleets
   // don't need it. Opt-in for corporate / VIP / regulated accounts.
   driverDetailsRequired: boolean("driver_details_required").notNull().default(false),
+  // ---------- self-service signup ----------
+  // Populated when a partner applies via /signup. Cleared on no rule —
+  // remains alongside other fields after approval as the application record.
+  // applicantEmail becomes the first fleet_admin user on the partner when
+  // the application is approved.
+  applicantEmail: text("applicant_email"),
+  applicationNotes: text("application_notes"),
   // ---------- reliability metrics (recomputed periodically) ----------
   // All metrics are over a rolling 7-day window.
   // Null means "not yet computed" — routing treats these as neutral (no penalty).

@@ -34,6 +34,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                 {isSuper && <Link href="/fees" className="hover:text-white">Fees</Link>}
                 <Link href="/bookings" className="hover:text-white">Bookings</Link>
                 {isSuper && <Link href="/distribution" className="hover:text-white">Distribution</Link>}
+                {isSuper && <Link href="/signups" className="hover:text-white">Signups</Link>}
                 {isSuper && <Link href="/audit" className="hover:text-white">Audit</Link>}
                 {isSuper && <Link href="/webhooks" className="hover:text-white">Webhooks</Link>}
                 {isSuper && <Link href="/users" className="hover:text-white">Users</Link>}

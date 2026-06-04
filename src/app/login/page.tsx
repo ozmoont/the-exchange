@@ -113,12 +113,22 @@ export default async function LoginPage({
                 Send sign-in link
               </button>
               <p className="text-xs text-ink-muted">
-                You&apos;ll get a one-time link that signs you in. Access is invite-only —
-                ask the founder if you should be on it.
+                You&apos;ll get a one-time link that signs you in. Access is invite-only.
               </p>
             </form>
           )}
         </div>
+
+        {!sent && (
+          <div className="card p-5 mt-4 text-center">
+            <p className="text-sm text-ink-muted">
+              New fleet?{" "}
+              <a href="/signup" className="text-accent font-semibold hover:underline">
+                Apply to join the network →
+              </a>
+            </p>
+          </div>
+        )}
 
         <p className="text-center text-xs text-ink-subtle mt-6">
           Booking exchange for transport networks · Built in Dublin

@@ -18,6 +18,7 @@ const COOKIE_NAME = "exchange_session";
 
 const PUBLIC_PREFIXES = [
   "/login",
+  "/signup",       // self-service partner application — accessible without auth
   "/auth/",
   "/api/auth/",
   "/api/webhooks/",

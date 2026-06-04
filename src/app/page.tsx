@@ -235,6 +235,18 @@ async function Dashboard({
     .orderBy(desc(auditLog.createdAt))
     .limit(6);
 
+  // Pending signup applications (super admin only — they need to know)
+  const pendingSignupsCount = isSuperAdmin
+    ? Number(
+        (
+          await db
+            .select({ n: count() })
+            .from(partners)
+            .where(eq(partners.status, "pending_approval"))
+        )[0]?.n ?? 0,
+      )
+    : 0;
+
   async function toggleKill() {
     "use server";
     await setKillSwitch(!killOn, killOn ? "manual_off" : "manual_on", userEmail);
@@ -269,6 +281,26 @@ async function Dashboard({
         <StatCardLink label="Completed" value={completed} tone="success" href="/bookings?group=completed" />
         <StatCardLink label="Failed / no match" value={failed} tone={failed > 0 ? "danger" : "neutral"} href="/bookings?group=no_match" />
       </div>
+
+      {isSuperAdmin && pendingSignupsCount > 0 && (
+        <Link
+          href="/signups"
+          className="card p-4 flex items-center justify-between gap-4 bg-info/30 border-l-4 border-l-sky-500 hover:bg-info/40 transition-colors"
+        >
+          <div>
+            <div className="text-xs uppercase tracking-wide text-info-fg font-semibold">
+              Pending applications
+            </div>
+            <div className="text-lg font-bold mt-1">
+              {pendingSignupsCount} fleet{pendingSignupsCount === 1 ? "" : "s"} waiting for review
+            </div>
+            <p className="text-xs text-ink-muted mt-1">
+              Approve to send the welcome email and activate their partner row.
+            </p>
+          </div>
+          <span className="text-sm text-info-fg font-semibold">Review →</span>
+        </Link>
+      )}
 
       {isSuperAdmin && (
         <section className={`card p-5 ${killOn ? "bg-red-50 border-red-200" : ""}`}>
