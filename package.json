@@ -20,6 +20,9 @@
     "spawn-fleets": "tsx --env-file=.env.local src/scripts/spawn-fleets.ts",
     "fire-jobs": "tsx --env-file=.env.local src/scripts/fire-jobs.ts",
     "backfill-reliability": "tsx --env-file=.env.local src/scripts/backfill-reliability.ts",
+    "demo:refresh": "tsx --env-file=.env.local src/scripts/demo-refresh.ts",
+    "seed:icabbi-staging": "tsx --env-file=.env.local src/scripts/seed-icabbi-staging.ts",
+    "smoke:icabbi-staging": "tsx --env-file=.env.local src/scripts/smoke-icabbi-staging.ts",
     "run-sql": "tsx --env-file=.env.local src/scripts/run-sql.ts"
   },
   "dependencies": {

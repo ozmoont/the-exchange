@@ -24,6 +24,7 @@ const PUBLIC_PREFIXES = [
   "/api/webhooks/",
   "/api/cron/",     // Vercel cron — authenticates via x-vercel-cron / Bearer
   "/api/health",
+  "/status",        // P1-O1 public status page — aggregate metrics only, no PII
   "/_next/",
   "/favicon",
 ];

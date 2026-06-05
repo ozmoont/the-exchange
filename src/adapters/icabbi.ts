@@ -44,6 +44,20 @@ import { mapICabbiStatus, isIgnoredICabbiStatus } from "@/lib/icabbi-status-map"
 
 const DEFAULT_BASE = "https://api.icabbi.com/v2";
 
+/**
+ * Resolve the API base URL for an iCabbi call. Per-partner override wins
+ * over the env-global override, which wins over the production default.
+ *
+ * This matters because different iCabbi tenants live on different clusters
+ * (e.g. "1staging" sandbox cluster at https://1stagingapi.icabbi.com/1staging,
+ * "bounds" production cluster). One global env var can't serve them all once
+ * we have more than one partner. Per-partner config does.
+ */
+function resolveBaseUrl(override?: string | null): string {
+  const url = override ?? process.env.ICABBI_API_BASE_URL ?? DEFAULT_BASE;
+  return url.replace(/\/$/, "");
+}
+
 export type ICabbiCredentials = {
   appKey: string;
   secretKey: string;
@@ -53,6 +67,14 @@ export type ICabbiCredentials = {
    * secret. Verified at the route-handler layer, not here.
    */
   webhookSecret: string;
+  /**
+   * Per-partner API base URL override. Required for sandbox/staging tenants
+   * that aren't on the production host. Examples:
+   *   - "https://1stagingapi.icabbi.com/1staging" (Staging 1)
+   *   - "https://api.icabbi.com/v2" (production, the default)
+   * Omit to use the env-global / production default.
+   */
+  apiBaseUrl?: string;
   /**
    * If we successfully auto-registered our webhook URL with iCabbi at
    * connect time, this holds the subscription_id they returned. Used to
@@ -73,6 +95,8 @@ export type RegisterWebhookArgs = {
   url: string;
   sharedSecret: string;
   topics?: string[];
+  /** Per-partner API base URL override; see ICabbiCredentials.apiBaseUrl. */
+  apiBaseUrl?: string;
 };
 
 export type RegisterWebhookResult =
@@ -84,7 +108,7 @@ const DEFAULT_TOPICS = ["TripStatus", "DriverDetails", "FinalFareReleased"] as c
 export async function registerWebhookSubscription(
   args: RegisterWebhookArgs,
 ): Promise<RegisterWebhookResult> {
-  const base = (process.env.ICABBI_API_BASE_URL ?? DEFAULT_BASE).replace(/\/$/, "");
+  const base = resolveBaseUrl(args.apiBaseUrl);
   const body = {
     url: args.url,
     shared_secret: args.sharedSecret,
@@ -132,8 +156,10 @@ export async function deleteWebhookSubscription(args: {
   appKey: string;
   secretKey: string;
   subscriptionId: string;
+  /** Per-partner API base URL override; see ICabbiCredentials.apiBaseUrl. */
+  apiBaseUrl?: string;
 }): Promise<{ ok: boolean; status: number; message?: string }> {
-  const base = (process.env.ICABBI_API_BASE_URL ?? DEFAULT_BASE).replace(/\/$/, "");
+  const base = resolveBaseUrl(args.apiBaseUrl);
   try {
     const res = await fetch(
       `${base}/webhooks/${encodeURIComponent(args.subscriptionId)}`,
@@ -247,7 +273,7 @@ export class ICabbiAdapter implements PartnerAdapter {
   // ---------- internals ----------
 
   private baseUrl(): string {
-    return (process.env.ICABBI_API_BASE_URL ?? DEFAULT_BASE).replace(/\/$/, "");
+    return resolveBaseUrl(this.creds.apiBaseUrl);
   }
 
   private headers(): HeadersInit {

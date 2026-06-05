@@ -25,6 +25,12 @@ type ICabbiCreds = {
   secretKey?: string;
   webhookSecret?: string;
   webhookSubscriptionId?: string;
+  /**
+   * Per-partner API base URL override. Required for sandbox tenants that
+   * aren't on the production host (e.g. staging is at
+   * https://1stagingapi.icabbi.com/1staging).
+   */
+  apiBaseUrl?: string;
 };
 
 function readCreds(stored: unknown): ICabbiCreds {
@@ -43,6 +49,12 @@ async function saveCredentialsAction(formData: FormData) {
   const appKey = String(formData.get("appKey") ?? "").trim();
   const newSecretKey = String(formData.get("secretKey") ?? "").trim();
   const secretKey = newSecretKey || existingCreds.secretKey || "";
+  const apiBaseUrlInput = String(formData.get("apiBaseUrl") ?? "").trim();
+  // Normalise: drop trailing slash + empty string → undefined so we don't
+  // persist "" and trigger the override branch on every call.
+  const apiBaseUrl = apiBaseUrlInput
+    ? apiBaseUrlInput.replace(/\/$/, "")
+    : existingCreds.apiBaseUrl;
 
   if (!appKey || !secretKey) {
     redirect(`/partners/${id}/integration?error=incomplete`);
@@ -58,6 +70,7 @@ async function saveCredentialsAction(formData: FormData) {
     secretKey,
     url: webhookUrl,
     sharedSecret: webhookSecret,
+    ...(apiBaseUrl ? { apiBaseUrl } : {}),
   });
 
   if (registration.ok && existingCreds.webhookSubscriptionId && existingCreds.appKey === appKey) {
@@ -72,6 +85,7 @@ async function saveCredentialsAction(formData: FormData) {
     appKey,
     secretKey,
     webhookSecret,
+    ...(apiBaseUrl ? { apiBaseUrl } : {}),
     ...(registration.ok ? { webhookSubscriptionId: registration.subscriptionId } : {}),
   };
 
@@ -150,6 +164,7 @@ async function rotateWebhookSecretAction(formData: FormData) {
       secretKey: creds.secretKey,
       url: webhookUrl,
       sharedSecret: newWebhookSecret,
+      ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
     });
     if (reg.ok) {
       newSubscriptionId = reg.subscriptionId;
@@ -158,6 +173,7 @@ async function rotateWebhookSecretAction(formData: FormData) {
           appKey: creds.appKey,
           secretKey: creds.secretKey,
           subscriptionId: creds.webhookSubscriptionId,
+          ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
         });
       }
     } else {
@@ -214,6 +230,7 @@ async function disconnectAction(formData: FormData) {
       appKey: creds.appKey,
       secretKey: creds.secretKey,
       subscriptionId: creds.webhookSubscriptionId,
+      ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
     });
     if (!del.ok) {
       console.warn(
@@ -350,6 +367,45 @@ export default async function IntegrationPage({
         </Banner>
       )}
 
+      {/* Preview block — what happens when you click Connect */}
+      {!isConnected && (
+        <section className="card p-5 bg-info/20 border border-info/30">
+          <h2 className="text-base font-semibold mb-2">What happens when you click Connect</h2>
+          <ol className="text-sm text-ink-muted space-y-1.5 list-decimal pl-5">
+            <li>
+              We encrypt your App-Key and Secret-Key with AES-256-GCM and store
+              the ciphertext (never plaintext).
+            </li>
+            <li>
+              We generate a per-fleet webhook signing secret and show it to you{" "}
+              <strong>once</strong>. Save it.
+            </li>
+            <li>
+              We call iCabbi&apos;s webhook subscription API with the URL below
+              and your signing secret — so iCabbi knows where to POST status
+              events for cross-network bookings.
+            </li>
+            <li>
+              The adapter flips from <code>mock_icabbi</code> to{" "}
+              <code>icabbi</code>. From now on every routing decision and
+              outbound booking call uses the real iCabbi API.
+            </li>
+            <li>
+              Every step is audit-logged. Visit <Link href="/audit" className="underline">/audit</Link> after
+              connecting to see exactly what happened.
+            </li>
+          </ol>
+          <div className="mt-4 pt-4 border-t border-info/30">
+            <div className="text-[10px] uppercase tracking-wide text-ink-subtle font-semibold mb-1">
+              Inbound webhook URL we will register with iCabbi
+            </div>
+            <code className="block text-xs bg-ink/5 px-3 py-2 rounded font-mono break-all">
+              {webhookUrl}
+            </code>
+          </div>
+        </section>
+      )}
+
       {/* Credential form */}
       <form action={saveCredentialsAction} className="space-y-4">
         <input type="hidden" name="id" value={partner.id} />
@@ -385,6 +441,26 @@ export default async function IntegrationPage({
               placeholder={creds.secretKey ? "•".repeat(20) : "paste secret"}
               className="input"
               autoComplete="off"
+            />
+          </Field>
+
+          <Field
+            label="API URL"
+            hint={
+              "Per-partner override. Leave blank for production " +
+              "(https://api.icabbi.com/v2). Use the sandbox URL when iCabbi " +
+              "provides one — e.g. https://1stagingapi.icabbi.com/1staging for " +
+              "Staging 1 test tenants. No trailing slash needed."
+            }
+          >
+            <input
+              name="apiBaseUrl"
+              type="text"
+              defaultValue={creds.apiBaseUrl ?? ""}
+              placeholder={icabbiBase}
+              className="input font-mono"
+              autoComplete="off"
+              spellCheck={false}
             />
           </Field>
         </Section>
