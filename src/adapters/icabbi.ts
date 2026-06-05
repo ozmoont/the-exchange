@@ -105,6 +105,13 @@ export type RegisterWebhookResult =
 
 const DEFAULT_TOPICS = ["TripStatus", "DriverDetails", "FinalFareReleased"] as const;
 
+// 8s is generous for a single REST POST but short enough that the
+// integration page Connect button doesn't appear hung for a full minute
+// while Vercel's function eventually times out. iCabbi staging health
+// can be slow during off-peak. If we're still timing out at 8s the
+// endpoint is probably wrong, not just slow.
+const WEBHOOK_TIMEOUT_MS = 8000;
+
 export async function registerWebhookSubscription(
   args: RegisterWebhookArgs,
 ): Promise<RegisterWebhookResult> {
@@ -125,6 +132,7 @@ export async function registerWebhookSubscription(
         Accept: "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -147,6 +155,14 @@ export async function registerWebhookSubscription(
     }
     return { ok: true, subscriptionId: String(subId) };
   } catch (err) {
+    // AbortSignal.timeout fires a DOMException named 'TimeoutError'.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      return {
+        ok: false,
+        status: 0,
+        message: `timed out after ${WEBHOOK_TIMEOUT_MS}ms calling ${base}/webhooks/register — endpoint may not exist on this iCabbi cluster`,
+      };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 0, message: msg };
   }
@@ -170,6 +186,7 @@ export async function deleteWebhookSubscription(args: {
           "Secret-Key": args.secretKey,
           Accept: "application/json",
         },
+        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       },
     );
     if (!res.ok && res.status !== 404) {
