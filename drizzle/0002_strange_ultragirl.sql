@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS "synthetic_test_runs" (
 	"error_message" text
 );
 --> statement-breakpoint
-ALTER TABLE "partners" ADD COLUMN "auto_suspend_cooldown_until" timestamp;--> statement-breakpoint
+ALTER TABLE "partners" ADD COLUMN IF NOT EXISTS "auto_suspend_cooldown_until" timestamp;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "synthetic_test_runs_ran_at_idx" ON "synthetic_test_runs" USING btree ("ran_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_log_action_idx" ON "audit_log" USING btree ("action","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "partners_participation_mode_idx" ON "partners" USING btree ("participation_mode");--> statement-breakpoint

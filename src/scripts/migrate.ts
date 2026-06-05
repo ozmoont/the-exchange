@@ -44,6 +44,29 @@ async function main() {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
+    // Two contexts:
+    //
+    //   1. Local dev or manual run — the user wants to apply migrations and
+    //      forgot to set DATABASE_URL. We should fail loudly so they fix it.
+    //
+    //   2. Vercel build step — DATABASE_URL might be marked "Sensitive" and
+    //      therefore unavailable at build time, even though it's set for
+    //      runtime. In that case we MUST NOT fail the build; we just skip
+    //      and warn. Migrations can be run separately from a workstation
+    //      (DATABASE_URL=<prod-url> pnpm db:migrate) or via a one-off Vercel
+    //      function.
+    //
+    // We detect "we're in a Vercel build" by checking the VERCEL env var,
+    // which is set on every Vercel build (and runtime).
+    const inVercelBuild = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV;
+    if (inVercelBuild) {
+      console.warn(
+        "[migrate] DATABASE_URL is not set at build time. Skipping migrations " +
+          "for this build. Run them manually with `DATABASE_URL=<prod-url> pnpm db:migrate` " +
+          "or set DATABASE_URL as a non-Sensitive Vercel env var so it's exposed at build.",
+      );
+      return; // exit 0 — let the build continue
+    }
     console.error(
       "[migrate] DATABASE_URL is not set. Set it inline, put it in .env.local, " +
         "or use DRIZZLE_ENV_FILE=.env.production pnpm db:migrate.",
