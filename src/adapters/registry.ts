@@ -1,6 +1,7 @@
 import type { PartnerAdapter } from "@/lib/types";
 import { MockICabbiAdapter } from "./mock-icabbi";
 import { MockCMACAdapter } from "./mock-cmac";
+import { MockFreeNowAdapter } from "./mock-freenow";
 import { ICabbiAdapter, type ICabbiCredentials } from "./icabbi";
 import { db } from "@/db/client";
 import { partners } from "@/db/schema";
@@ -21,6 +22,7 @@ const factories: Record<string, AdapterFactory> = {
   mock_icabbi: (partnerId, creds) =>
     new MockICabbiAdapter(partnerId, (creds?.tenantLabel as string) ?? partnerId.slice(0, 4)),
   mock_cmac: (partnerId) => new MockCMACAdapter(partnerId),
+  mock_freenow: (partnerId) => new MockFreeNowAdapter(partnerId),
   icabbi: (partnerId, creds) => {
     if (!creds) {
       throw new Error(`Partner ${partnerId} has adapterKey "icabbi" but no credentials saved`);
