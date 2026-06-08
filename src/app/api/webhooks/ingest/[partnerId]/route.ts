@@ -180,32 +180,73 @@ export async function POST(
   // P0-5: replay protection. The HMAC signature proves the payload came from
   // an entity that knows our shared secret — but a captured payload can be
   // replayed indefinitely. Reject anything whose sent_at is more than
-  // WEBHOOK_MAX_AGE_MS old. Karhoo / iCabbi both emit sent_at on every
-  // event. Missing sent_at = malformed (reject).
+  // WEBHOOK_MAX_AGE_MS old.
+  //
+  // iCabbi's actual envelope shape is being learned (item #3). Try several
+  // plausible field names for the timestamp. If none present, ALSO try to
+  // pull a timestamp from inside a nested `data` object (some webhook
+  // platforms inline timestamps there). If still none, allow the event
+  // through but log a warning + skip replay protection — better to process
+  // events with weaker security guarantees than to silently drop everything
+  // because of a field-name mismatch.
   //
   // Window default 5 min covers realistic clock skew + first-retry latency.
   // Set WEBHOOK_MAX_AGE_MS env var to override.
   const maxAgeMs = Number(process.env.WEBHOOK_MAX_AGE_MS ?? 5 * 60_000);
-  const sentAtRaw = envelope.sent_at;
-  const sentAtMs = typeof sentAtRaw === "string" ? Date.parse(sentAtRaw) : NaN;
-  if (!Number.isFinite(sentAtMs)) {
-    await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", {
-      reason: "missing_sent_at",
-      envelope_id: envelopeId,
-    });
-    return NextResponse.json({ error: "missing_sent_at" }, { status: 400 });
+  const env = envelope as Record<string, unknown>;
+  const data = (env.data && typeof env.data === "object" ? env.data : null) as Record<string, unknown> | null;
+
+  const sentAtCandidates = [
+    env.sent_at,
+    env.sentAt,
+    env.timestamp,
+    env.created_at,
+    env.createdAt,
+    env.time,
+    env.event_time,
+    env.eventTime,
+    env.occurred_at,
+    env.occurredAt,
+    data?.sent_at,
+    data?.timestamp,
+    data?.created_at,
+  ];
+
+  let sentAtMs = NaN;
+  for (const c of sentAtCandidates) {
+    if (typeof c === "string" && c) {
+      const parsed = Date.parse(c);
+      if (Number.isFinite(parsed)) {
+        sentAtMs = parsed;
+        break;
+      }
+    } else if (typeof c === "number" && Number.isFinite(c)) {
+      // unix seconds or ms — best guess: if < 10^12, treat as seconds
+      sentAtMs = c < 1e12 ? c * 1000 : c;
+      break;
+    }
   }
-  const ageMs = Date.now() - sentAtMs;
-  if (ageMs > maxAgeMs) {
+
+  if (!Number.isFinite(sentAtMs)) {
     console.warn(
-      `[webhook] replay-protection rejected stale event ${envelopeId} for partner ${partnerId} (age ${Math.round(ageMs / 1000)}s)`,
+      `[webhook] no timestamp field found for partner ${partnerId} — skipping replay protection. ` +
+        `Top-level keys: ${Object.keys(env).join(",")}. ` +
+        `Body preview: ${rawBody.slice(0, 500)}`,
     );
-    await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", {
-      reason: "stale_sent_at",
-      envelope_id: envelopeId,
-      age_ms: ageMs,
-    });
-    return NextResponse.json({ error: "stale_event", age_seconds: Math.round(ageMs / 1000) }, { status: 401 });
+    // Don't reject — let the event through. Replay protection skipped.
+  } else {
+    const ageMs = Date.now() - sentAtMs;
+    if (ageMs > maxAgeMs) {
+      console.warn(
+        `[webhook] replay-protection rejected stale event ${envelopeId} for partner ${partnerId} (age ${Math.round(ageMs / 1000)}s)`,
+      );
+      await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", {
+        reason: "stale_sent_at",
+        envelope_id: envelopeId,
+        age_ms: ageMs,
+      });
+      return NextResponse.json({ error: "stale_event", age_seconds: Math.round(ageMs / 1000) }, { status: 401 });
+    }
   }
 
   // Idempotency: same envelope id from the same partner is a no-op (retries
