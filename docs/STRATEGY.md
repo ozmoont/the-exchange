@@ -28,11 +28,18 @@
 
 11. **`networking_status` is a separate webhook event stream.** Distinct from the parent booking status events. Our inbound handler subscribes to both. The networking event tells us about the cross-tenant trip's lifecycle even when the parent booking on the demand side stays at `TRANSFERRED`.
 
+12. **The Exchange registers as a virtual fleet inside iCabbi Networking Engine.** This is the mechanism iCabbi uses to hand us overflow bookings without modifying their engine — we appear as a participating fleet, and when no real fleet has coverage iCabbi offers the booking to us via the standard fleet offer API. Per the iCabbi BDD spec (Epic 4). Commercial confirmation received from iCabbi side. Technical work in H1.5 (between H1 and H2).
+
+13. **Adapter pattern stays hardcoded for MVP. Configurable mapping layer is H2 work.** The iCabbi BDD spec describes a configuration-driven mapping system where partners declare field names + transformations + value lookups without code changes. For the pilot (1–3 partners) hand-coded adapters are faster and lower-risk. We build the mapping layer as we onboard partner #4 onwards, when the case-by-case adapter cost becomes the bottleneck. Spec: `docs/specs/mapping-layer.md` (to be written).
+
+14. **Internal canonical field names align to the iCabbi BDD spec (Section 4.1).** Our `NormalisedBooking` type and the field names we expose on outbound webhooks track iCabbi's canonical schema (`pickup.lat`, `passenger.name`, `fare.amount`, `vehicle_type`, `eta_minutes`, `booking.type = ASAP | PREBOOK`, status enum, etc.). Alignment plan in `docs/CANONICAL_FIELDS.md`. Done incrementally — new adapters use canonical names from day one; existing internal names migrate over time without breaking the wire.
+
 ## 2. Explicitly out of scope
 
 These are NOT in the MVP. If a request fits one of these categories, Franko rejects or defers — surface to the founder if there's commercial pressure to include:
 
-- **Pre-booking aggregation** (fan-out availability/quote/ETA queries to multiple partners and merge). iCabbi already does pre-booking; we pass through.
+- **Configurable per-partner mapping layer** (declarative field mappings + transformations + value lookups). H2 scope per decision #13; until then adapters are hand-coded per partner.
+- **Quote / availability fan-out** with parallel multi-partner queries. Spec'd in iCabbi BDD Epic 1.2 + 2.2; H2 work — for MVP we rank candidates from metadata (geo + reliability) and push directly.
 - **Odoo billing settlement.** Ledger emits events; downstream system reconciles.
 - **Surcharge engine** (peak hours, event-based, vehicle uplift).
 - **Cancellation fee engine.**
@@ -55,8 +62,9 @@ These are NOT in the MVP. If a request fits one of these categories, Franko reje
 | Horizon | Window | Goal |
 |---|---|---|
 | **H0 — Scaffold** | Done | Project scaffolded, mock adapters, routing engine, portal pages, smoke test, team workflow installed. |
-| **H1 — Real iCabbi adapter + pilot** | Next | Replace `MockICabbiAdapter` with real `ICabbiAdapter` against sandbox creds. Onboard two real iCabbi fleets (247 Birmingham + Take Me as proof-of-concept pair). Demo end-to-end with Frank. Validate Position #2: route a booking via our decision layer using iCabbi's coid mechanism as transport. |
-| **H2 — First external partner** | After H1 | CMAC-shaped or FreeNow sandbox. Prove the adapter pattern under a non-iCabbi shape. |
+| **H1 — Real iCabbi adapter + outbound smoke** | In progress | Replace `MockICabbiAdapter` with real `ICabbiAdapter` against sandbox creds (Staging 1 COID 1102 + 2102). Validate Position #2 via real iCabbi staging round-trip. Aligned to iCabbi BDD spec for Epic 1 (inbound) and outbound creation path. |
+| **H1.5 — Virtual fleet registration** | After H1 smoke is green | iCabbi registers The Exchange as a participating fleet inside their Networking Engine (per decision #12). Unlocks Epic 2 (true outbound flow) where iCabbi's standard fleet offer API hands us overflow. Loop detection, no-coverage release back to iCabbi, idempotency-key header support all in this horizon. |
+| **H2 — First non-iCabbi partner + mapping layer** | After H1.5 | CMAC-shaped or FreeNow sandbox onboarded. **This is when the configurable mapping layer ships** (per decision #13) — first partner that doesn't fit the iCabbi adapter shape. Quote/availability fan-out + per-partner auth mechanisms (OAuth, API Key, Basic) land here. |
 | **H3 — Fee config UI + Auth** | After H2 | Replace seed-only fees with admin UI under `/fees`. Wrap portal with Auth.js. |
 | **H4 — Production hardening** | Pre-launch | Rate limits, monitoring, signed webhooks, secret rotation, rollback runbook. |
 

@@ -317,14 +317,17 @@ export default async function IntegrationPage({
       >
         {isConnected ? (
           <>
-            <strong>Connected.</strong> Routes via the real iCabbi adapter — App-Key authenticated
-            against <code>{icabbiBase}</code>.
+            <strong>Connected.</strong> Routes via the real iCabbi adapter — App-Key
+            authenticated against{" "}
+            <code>{creds.apiBaseUrl ?? icabbiBase}</code>.
           </>
         ) : (
           <>
             <strong>Not connected.</strong> Using the mock adapter. Paste the partner&apos;s
-            iCabbi App-Key and Secret-Key below to go live. All iCabbi tenants talk to the same
-            host (<code>{icabbiBase}</code>) — the App-Key/Secret-Key pair identifies the tenant.
+            iCabbi App-Key and Secret-Key below to go live. Most production tenants talk to{" "}
+            <code>{icabbiBase}</code>; sandbox / staging tenants live on different clusters
+            (e.g. <code>https://1stagingapi.icabbi.com/1staging</code>) — set the API URL
+            field below accordingly. The App-Key/Secret-Key pair identifies the tenant.
           </>
         )}
       </div>
