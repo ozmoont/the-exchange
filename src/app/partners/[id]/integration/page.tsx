@@ -31,6 +31,13 @@ type ICabbiCreds = {
    * https://1stagingapi.icabbi.com/1staging).
    */
   apiBaseUrl?: string;
+  /**
+   * H1.5 — Bearer token iCabbi uses to authenticate when calling our
+   * inbound endpoints (/api/icabbi/bookings, /api/icabbi/cancellations).
+   * Generated on first Connect. Shown once via the SecretReveal banner.
+   * Rotation is via the same path as the webhook secret.
+   */
+  inboundBearerToken?: string;
 };
 
 function readCreds(stored: unknown): ICabbiCreds {
@@ -62,6 +69,13 @@ async function saveCredentialsAction(formData: FormData) {
 
   const isFirstConnect = !existingCreds.webhookSecret;
   const webhookSecret = existingCreds.webhookSecret ?? randomBytes(32).toString("base64url");
+  // H1.5 — issue an inbound Bearer token for iCabbi to authenticate when
+  // calling our /api/icabbi/* endpoints. 48-byte base64url. Same lifecycle
+  // as the webhook secret: generated on first Connect, rotated via the
+  // rotateWebhookSecretAction (TBD: consider separating the rotation
+  // controls if we ever need to rotate independently).
+  const inboundBearerToken =
+    existingCreds.inboundBearerToken ?? randomBytes(48).toString("base64url");
 
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const webhookUrl = `${appUrl}/api/webhooks/ingest/${id}`;
@@ -85,6 +99,7 @@ async function saveCredentialsAction(formData: FormData) {
     appKey,
     secretKey,
     webhookSecret,
+    inboundBearerToken,
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
     ...(registration.ok ? { webhookSubscriptionId: registration.subscriptionId } : {}),
   };
@@ -137,7 +152,10 @@ async function saveCredentialsAction(formData: FormData) {
 
   const qs = new URLSearchParams();
   qs.set("saved", "1");
-  if (isFirstConnect) qs.set("webhookSecret", webhookSecret);
+  if (isFirstConnect) {
+    qs.set("webhookSecret", webhookSecret);
+    qs.set("inboundBearerToken", inboundBearerToken);
+  }
   if (registration.ok) qs.set("subscriptionId", registration.subscriptionId);
   else qs.set("registrationError", `${registration.status}`);
 
@@ -154,6 +172,9 @@ async function rotateWebhookSecretAction(formData: FormData) {
 
   const creds = readCreds(partner.credentials);
   const newWebhookSecret = randomBytes(32).toString("base64url");
+  // H1.5 — rotate the Bearer token at the same time. iCabbi has to update
+  // both sides anyway, so packaging them keeps the integration UI simple.
+  const newInboundBearerToken = randomBytes(48).toString("base64url");
 
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const webhookUrl = `${appUrl}/api/webhooks/ingest/${id}`;
@@ -186,6 +207,7 @@ async function rotateWebhookSecretAction(formData: FormData) {
   const next: ICabbiCreds = {
     ...creds,
     webhookSecret: newWebhookSecret,
+    inboundBearerToken: newInboundBearerToken,
     webhookSubscriptionId: newSubscriptionId,
   };
 
@@ -213,7 +235,9 @@ async function rotateWebhookSecretAction(formData: FormData) {
   revalidatePath(`/partners/${id}/integration`);
   revalidatePath("/audit");
 
-  redirect(`/partners/${id}/integration?rotated=1&webhookSecret=${newWebhookSecret}`);
+  redirect(
+    `/partners/${id}/integration?rotated=1&webhookSecret=${newWebhookSecret}&inboundBearerToken=${newInboundBearerToken}`,
+  );
 }
 
 async function disconnectAction(formData: FormData) {
@@ -277,6 +301,7 @@ export default async function IntegrationPage({
     disconnected?: string;
     error?: string;
     webhookSecret?: string;
+    inboundBearerToken?: string;
     subscriptionId?: string;
     registrationError?: string;
   }>;
@@ -291,7 +316,10 @@ export default async function IntegrationPage({
   const creds = readCreds(partner.credentials);
   const isConnected = partner.adapterKey === "icabbi" && !!creds.appKey;
   const icabbiBase = process.env.ICABBI_API_BASE_URL ?? "https://api.icabbi.com/v2";
-  const webhookUrl = `${process.env.APP_URL ?? "http://localhost:3000"}/api/webhooks/ingest/${partner.id}`;
+  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
+  const webhookUrl = `${appUrl}/api/webhooks/ingest/${partner.id}`;
+  const inboundBookingsUrl = `${appUrl}/api/icabbi/bookings`;
+  const inboundCancellationsUrl = `${appUrl}/api/icabbi/cancellations`;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -340,11 +368,25 @@ export default async function IntegrationPage({
           secret={sp.webhookSecret}
         />
       )}
+      {sp.saved === "1" && sp.inboundBearerToken && (
+        <SecretReveal
+          title="Inbound Bearer token generated (H1.5 outbound flow)"
+          body="iCabbi sends this in the Authorization header when offering bookings to The Exchange as a virtual fleet. Configure it in their dispatch fleet-config under 'Authorization: Bearer <token>'. Shown once."
+          secret={sp.inboundBearerToken}
+        />
+      )}
       {sp.rotated === "1" && sp.webhookSecret && (
         <SecretReveal
           title="Webhook signing secret rotated"
           body="Update iCabbi's webhook configuration with this new secret immediately. The previous secret will no longer be accepted."
           secret={sp.webhookSecret}
+        />
+      )}
+      {sp.rotated === "1" && sp.inboundBearerToken && (
+        <SecretReveal
+          title="Inbound Bearer token rotated"
+          body="Update iCabbi's fleet-config Authorization header with this new Bearer token. The previous token will no longer be accepted."
+          secret={sp.inboundBearerToken}
         />
       )}
       {sp.saved === "1" && !sp.webhookSecret && (
@@ -515,6 +557,51 @@ export default async function IntegrationPage({
                 Generates a new secret immediately. iCabbi&apos;s side must be updated to match.
               </span>
             </form>
+          </Section>
+
+          {/* H1.5 outbound flow — iCabbi calls us when they have no driver */}
+          <Section title="Inbound from iCabbi (virtual fleet — H1.5)">
+            <p className="text-sm text-ink-muted">
+              When iCabbi has no driver coverage on this tenant, their Networking
+              Engine offers the booking to The Exchange (registered as a virtual
+              fleet on their side per <code>STRATEGY.md</code> decision #12).
+              Configure these URLs in iCabbi&apos;s fleet-config UI for this
+              tenant, alongside the Bearer token shown at connect time.
+            </p>
+
+            <Field label="Bookings endpoint (offer a booking to The Exchange)">
+              <input value={inboundBookingsUrl} readOnly className="input font-mono" />
+            </Field>
+
+            <Field label="Cancellations endpoint (cancel a previously-offered booking)">
+              <input value={inboundCancellationsUrl} readOnly className="input font-mono" />
+            </Field>
+
+            <Field label="Authentication header">
+              <input
+                value="Authorization: Bearer <token shown at connect time>"
+                readOnly
+                className="input font-mono"
+              />
+            </Field>
+
+            <Field label="Inbound Bearer token">
+              <input
+                value={
+                  creds.inboundBearerToken
+                    ? "•".repeat(48) + " (saved, only shown once)"
+                    : "not generated"
+                }
+                readOnly
+                className="input font-mono"
+              />
+            </Field>
+
+            <p className="text-xs text-ink-muted">
+              Lost the token? Use the Rotate button above — it regenerates both
+              the webhook signing secret and this Bearer token together. iCabbi
+              will need to update both on their side.
+            </p>
           </Section>
 
           <section className="card p-5 border-red-200">

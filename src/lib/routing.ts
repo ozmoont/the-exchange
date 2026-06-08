@@ -268,6 +268,22 @@ async function findEligibleRecipients(
   originatorPartnerId: string,
   booking: NormalisedBooking,
 ): Promise<EligiblePartner[]> {
+  // Look up the originator's kind for loop detection. If the originator is
+  // an iCabbi-kind partner (i.e. H1.5 outbound flow — iCabbi handed us
+  // overflow they couldn't fulfil), we MUST NOT route the booking back to
+  // any iCabbi-kind partner. That would create a hot-potato loop: tenant A
+  // has no driver → offers to The Exchange → we route to tenant B → tenant
+  // B has no driver → offers to The Exchange → loops forever.
+  //
+  // Per STRATEGY.md decision #12 (virtual fleet identity) and the loop-
+  // detection requirement in iCabbi BDD Epic 4 (Story 4.2).
+  const [originator] = await db
+    .select({ kind: partners.kind })
+    .from(partners)
+    .where(eq(partners.id, originatorPartnerId));
+  const originatorKind = originator?.kind ?? null;
+  const excludeAllICabbiPartners = originatorKind === "icabbi_fleet";
+
   const possible = await db
     .select()
     .from(partners)
@@ -281,7 +297,10 @@ async function findEligibleRecipients(
       ),
     );
 
-  const candidateIds = possible.filter((p) => p.id !== originatorPartnerId).map((p) => p.id);
+  const candidateIds = possible
+    .filter((p) => p.id !== originatorPartnerId)
+    .filter((p) => !(excludeAllICabbiPartners && p.kind === "icabbi_fleet"))
+    .map((p) => p.id);
   if (candidateIds.length === 0) return [];
 
   const outRules = await db
@@ -308,6 +327,7 @@ async function findEligibleRecipients(
 
   return possible
     .filter((p) => p.id !== originatorPartnerId)
+    .filter((p) => !(excludeAllICabbiPartners && p.kind === "icabbi_fleet"))
     .filter((p) => outAllowed.has(p.id) && inAllowed.has(p.id))
     .filter((p) => p.bookingTypes.includes(booking.bookingType))
     .filter((p) => p.vehicleTypes.length === 0 || p.vehicleTypes.includes(booking.vehicleType))

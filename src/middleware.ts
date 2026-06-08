@@ -23,6 +23,7 @@ const PUBLIC_PREFIXES = [
   "/api/auth/",
   "/api/webhooks/",
   "/api/cron/",     // Vercel cron — authenticates via x-vercel-cron / Bearer
+  "/api/icabbi/",   // H1.5 inbound from iCabbi — Bearer token auth at the route level
   "/api/health",
   "/status",        // P1-O1 public status page — aggregate metrics only, no PII
   "/_next/",
