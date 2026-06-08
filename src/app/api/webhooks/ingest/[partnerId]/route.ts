@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { db } from "@/db/client";
 import { partners, transits } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -129,10 +129,31 @@ export async function POST(
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const envelopeId = String(envelope.id ?? "");
+  // iCabbi's actual envelope shape isn't fully documented (item #3 in
+  // ICABBI_DEPENDENCIES.md). We try the Karhoo-canonical `id`, then a list
+  // of plausible alternatives, then fall back to a deterministic hash of
+  // the body so we can still dedupe even when no id is provided.
+  //
+  // Log the raw envelope keys on every fallback so we can adjust to the
+  // real shape once we've seen a few events.
+  const envelopeIdRaw =
+    envelope.id ??
+    (envelope as Record<string, unknown>).event_id ??
+    (envelope as Record<string, unknown>).webhook_id ??
+    (envelope as Record<string, unknown>).delivery_id ??
+    (envelope as Record<string, unknown>).notification_id ??
+    null;
+  let envelopeId = envelopeIdRaw != null ? String(envelopeIdRaw) : "";
   if (!envelopeId) {
-    // No id = can't dedupe. Karhoo always sets this; reject as malformed.
-    return NextResponse.json({ error: "missing_envelope_id" }, { status: 400 });
+    // Fallback id = sha256(partnerId || rawBody) truncated to 32 chars.
+    // Stable across retries of the same event, unique per distinct event.
+    const hash = createHash("sha256").update(partnerId).update("|").update(rawBody).digest("hex");
+    envelopeId = `body-hash:${hash.slice(0, 32)}`;
+    console.warn(
+      `[webhook] no envelope id field found for partner ${partnerId} — falling back to body-hash id. ` +
+        `Top-level keys: ${Object.keys(envelope).join(",")}. ` +
+        `Body preview: ${rawBody.slice(0, 400)}`,
+    );
   }
 
   // P0-5: replay protection. The HMAC signature proves the payload came from
