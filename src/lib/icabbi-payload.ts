@@ -78,6 +78,34 @@ export type NormaliseResult =
  * Returns ok:false on missing required fields with a list of what's missing
  * so the caller's error response is actionable.
  */
+/**
+ * Map iCabbi-canonical vehicle types to our internal vehicleType strings.
+ * Per STRATEGY.md decision #14 — translate canonical names at the wire
+ * boundary, keep internal names as they are.
+ *
+ * Unknown values pass through unchanged so partner configs that use a
+ * custom non-canonical name still match.
+ */
+function canonicalToInternalVehicleType(canonical: string): string {
+  switch (canonical) {
+    case "saloon":
+      return "standard";
+    case "exec":
+    case "executive":
+      return "exec";
+    case "mpv":
+    case "minivan":
+      return "mpv";
+    case "wav":
+    case "wheelchair":
+      return "wav";
+    case "van":
+      return "van";
+    default:
+      return canonical;
+  }
+}
+
 export function normaliseICabbiInboundBooking(
   raw: ICabbiInboundBooking,
 ): NormaliseResult {
@@ -105,7 +133,13 @@ export function normaliseICabbiInboundBooking(
   const scheduledFor =
     typeof scheduledForRaw === "string" && scheduledForRaw.trim() ? scheduledForRaw.trim() : undefined;
 
-  const vehicleType = String(raw.vehicle_type ?? raw.vehicleType ?? "standard").toLowerCase();
+  // Translate iCabbi canonical vehicle types (per BDD spec Section 4.1)
+  // to our internal taxonomy. iCabbi canonical: saloon | exec | mpv | wav
+  // | van. Our internal: standard | exec | wav | (and some custom).
+  // Pass-through anything we don't recognise so future custom types still
+  // route — they may still match a partner's exact-string vehicleTypes.
+  const vehicleTypeRaw = String(raw.vehicle_type ?? raw.vehicleType ?? "standard").toLowerCase();
+  const vehicleType = canonicalToInternalVehicleType(vehicleTypeRaw);
   const fareEstimate = raw.fare_estimate ?? raw.fareEstimate;
   const fareEstimatePence =
     typeof fareEstimate === "number" && Number.isFinite(fareEstimate)
