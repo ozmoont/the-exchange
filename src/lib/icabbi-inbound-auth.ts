@@ -77,9 +77,24 @@ export async function authenticateInboundCaller(
     .where(eq(partners.kind, "icabbi_fleet"));
 
   for (const row of rows) {
-    const creds = (decryptIfNeeded(row.credentials as Record<string, unknown> | null) ?? {}) as {
-      inboundBearerToken?: string;
-    };
+    // Decrypt per-row — must not throw out of the loop. A partner whose
+    // credentials were encrypted under a previous PARTNER_CREDENTIAL_KEY
+    // will throw "Unsupported state" from createDecipheriv. We log + skip
+    // that row rather than failing the whole auth path. Without this guard,
+    // one bad row 500s every inbound API call.
+    let creds: { inboundBearerToken?: string } = {};
+    try {
+      creds = (decryptIfNeeded(row.credentials as Record<string, unknown> | null) ?? {}) as {
+        inboundBearerToken?: string;
+      };
+    } catch (err) {
+      console.warn(
+        `[icabbi-inbound-auth] failed to decrypt credentials for partner ${row.id} — skipping. ` +
+          `Likely cause: credentials encrypted under a different PARTNER_CREDENTIAL_KEY. ` +
+          `err=${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
     if (!creds.inboundBearerToken) continue;
     if (constantTimeEqual(creds.inboundBearerToken, provided)) {
       return {
