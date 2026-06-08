@@ -646,6 +646,28 @@ async function parseInboundEvent(
     const bookingId = String(properties.booking_id ?? properties.bookingId ?? properties.id ?? "");
     const statusRaw = String(properties.status ?? "");
 
+    // Detect iCabbi's "template not substituted" failure mode. If most
+    // properties values start with '#' (their placeholder syntax —
+    // #booking_id, #booking_status, etc.), it means iCabbi's webhook
+    // config sent the raw template instead of filling in real values.
+    // Log loudly so this is impossible to miss next time. Confirmed
+    // 2026-06-08 with Frank Sims — this happened on first staging
+    // integration and burned an hour of debug before we spotted it.
+    const propVals = Object.values(properties).filter((v) => typeof v === "string") as string[];
+    const placeholderCount = propVals.filter((v) => v.startsWith("#")).length;
+    if (propVals.length > 0 && placeholderCount / propVals.length >= 0.5) {
+      console.error(
+        `[icabbi-adapter] ⚠️  TEMPLATE-NOT-SUBSTITUTED — iCabbi sent the raw webhook template ` +
+          `with #placeholder values instead of real data. Count: ${placeholderCount}/${propVals.length} ` +
+          `values are placeholders. Fix on iCabbi side: check the template engine config so it ` +
+          `substitutes variables before delivering. Sample value: booking_id="${bookingId}", status="${statusRaw}".`,
+      );
+      // Return null + record this distinct outcome so /webhooks shows the
+      // pattern explicitly. The webhook_deliveries.outcome field will
+      // surface this in the inspector.
+      return null;
+    }
+
     if (!bookingId) {
       // We can't act without a booking id. Log so we can see the shape.
       console.warn(
