@@ -315,10 +315,30 @@ export class ICabbiAdapter implements PartnerAdapter {
     } catch {
       // non-JSON body
     }
-    if (!res.ok) {
-      throw new Error(
-        `iCabbi POST ${path} failed: ${res.status} ${text.slice(0, 300)}`,
-      );
+
+    // iCabbi has a documented quirk: most error responses come back as
+    // HTTP 200 with the real status code in the response envelope. E.g.
+    // auth failures return:
+    //   HTTP/2 200
+    //   { "code": 401, "error": true, "message": "Auth Credentials Invalid", ... }
+    //
+    // If we only checked res.ok we'd treat this as success, fail to find
+    // an id in the empty body, and throw a misleading "no id in response"
+    // error. Instead, check the envelope's code field. Treat any non-2xx
+    // in-envelope code as a failure with the iCabbi-provided message.
+    const envelope = json as
+      | { code?: number; error?: boolean; message?: string; info?: { error_id?: string } }
+      | null;
+    const envelopeCode = envelope?.code;
+    const envelopeError =
+      envelope?.error === true ||
+      (typeof envelopeCode === "number" && (envelopeCode < 200 || envelopeCode >= 300));
+
+    if (!res.ok || envelopeError) {
+      const code = res.ok ? envelopeCode ?? res.status : res.status;
+      const msg = envelope?.message ?? text.slice(0, 300);
+      const errorId = envelope?.info?.error_id ? ` (iCabbi error_id=${envelope.info.error_id})` : "";
+      throw new Error(`iCabbi POST ${path} failed: ${code} ${msg}${errorId}`);
     }
     return json as T;
   }
@@ -477,6 +497,69 @@ function extractTrackMyTaxiLink(body: unknown): string | undefined {
  * vocabulary (CONFIRMED vs ASSIGNED, POB is shared, etc.) and is sent through
  * a separate webhook envelope.
  */
+/**
+ * Map iCabbi BDD-spec canonical status names ("Driver Assigned", "Passenger
+ * On Board", etc.) to our internal transit_status enum. Used when iCabbi
+ * sends statuses in the human-readable canonical form rather than the
+ * UPPER_SNAKE_CASE codes that mapICabbiStatus handles.
+ *
+ * Returns null for unrecognised values so callers can log + skip rather
+ * than coercing to a wrong state.
+ */
+function mapCanonicalStatus(raw: string): InternalTransitStatus | null {
+  if (!raw) return null;
+  // Normalise: lowercase, collapse whitespace, strip dashes/underscores
+  const norm = raw.toLowerCase().replace(/[\s_-]+/g, " ").trim();
+  switch (norm) {
+    case "accepted":
+      return "accepted";
+    case "rejected":
+      return "no_match";
+    case "driver assigned":
+      return "driver_assigned";
+    case "driver arrived":
+    case "arrived":
+      return "driver_arrived";
+    case "driver en route":
+    case "en route":
+    case "enroute":
+      return "en_route";
+    case "passenger on board":
+    case "on board":
+    case "in progress":
+      return "on_board";
+    case "completed":
+      return "completed";
+    case "cancelled":
+    case "canceled":
+      return "cancelled";
+    case "failed":
+      return "failed";
+    default:
+      return null;
+  }
+}
+
+// Same enum type the icabbi-status-map module uses internally — local
+// alias so we don't need a cross-file import for what's effectively
+// strings.
+type InternalTransitStatus =
+  | "received"
+  | "routing"
+  | "no_match"
+  | "pushed"
+  | "accepted"
+  | "driver_assigned"
+  | "driver_arrived"
+  | "en_route"
+  | "on_board"
+  | "completed"
+  | "cancelled"
+  | "failed"
+  | "paused"
+  | "error_auth"
+  | "error_other";
+
 function mapKarhooTripStatus(karhooStatus: string): string {
   switch (karhooStatus.toUpperCase()) {
     case "REQUESTED":      // deprecated upstream
@@ -528,6 +611,96 @@ async function parseInboundEvent(
   const direct = extractDirectICabbiBooking(payload);
   if (direct) {
     return await parseDirectICabbiPayload(direct);
+  }
+
+  // ------------------------------------------------------------------------
+  // iCabbi's actual outbound webhook shape (confirmed 2026-06-08 via Frank
+  // Sims). Their dispatch system uses a Segment-style template:
+  //
+  //   {
+  //     "userId":    "<booking customer phone>",
+  //     "event":     "<event name configured in their dispatch>",
+  //     "properties": {
+  //       "booking_id": "...",
+  //       "status":     "...",  // e.g. "DRIVER_ASSIGNED", "POB", "COMPLETED"
+  //       "driver_name":         "...",
+  //       "pickup_address":      "...",
+  //       "destination_address": "...",
+  //       "vehicle_reg":         "...",
+  //       "eta":                 "..."
+  //     },
+  //     "timestamp": "<ISO 8601>"
+  //   }
+  //
+  // This is what the staging COID 1102 tenant sends. The Karhoo-shaped
+  // envelope below is left for forward-compat with iCabbi-as-Karhoo
+  // partners (item #4 in ICABBI_DEPENDENCIES.md still open on whether
+  // they have both flavours).
+  // ------------------------------------------------------------------------
+  const properties =
+    payload.properties && typeof payload.properties === "object" && !Array.isArray(payload.properties)
+      ? (payload.properties as Record<string, unknown>)
+      : null;
+
+  if (properties) {
+    const bookingId = String(properties.booking_id ?? properties.bookingId ?? properties.id ?? "");
+    const statusRaw = String(properties.status ?? "");
+
+    if (!bookingId) {
+      // We can't act without a booking id. Log so we can see the shape.
+      console.warn(
+        `[icabbi-adapter] iCabbi properties-shape webhook with no booking_id. ` +
+          `event=${payload.event ?? "(none)"}. properties keys=${Object.keys(properties).join(",")}`,
+      );
+      return null;
+    }
+
+    // Map iCabbi's status value to our internal enum. mapICabbiStatus
+    // handles UPPER_SNAKE_CASE codes (DRIVER_ASSIGNED, POB, COMPLETED).
+    // If iCabbi sends canonical-spec status names ("Driver Assigned",
+    // "Passenger On Board"), map those too.
+    const normalisedStatus =
+      mapICabbiStatus(statusRaw) ?? mapCanonicalStatus(statusRaw);
+
+    if (!normalisedStatus) {
+      console.warn(
+        `[icabbi-adapter] unrecognised status "${statusRaw}" on iCabbi properties webhook for booking ${bookingId}. ` +
+          `event=${payload.event ?? "(none)"}. Skipping (ack_unhandled).`,
+      );
+      return null;
+    }
+
+    // Build the detail bundle so the transit timeline + driver-details
+    // panel can render whatever iCabbi provided this tick.
+    const detail: Record<string, unknown> = {
+      icabbi_status: statusRaw,
+      event: payload.event ?? null,
+      timestamp: payload.timestamp ?? null,
+      user_id: payload.userId ?? null,
+    };
+    if (properties.driver_name) {
+      detail.driver = {
+        first_name: String(properties.driver_name).split(" ")[0] ?? "",
+        last_name: String(properties.driver_name).split(" ").slice(1).join(" ") ?? "",
+        phone_number: properties.driver_phone ?? null,
+        license_number: properties.driver_license ?? null,
+      };
+    }
+    if (properties.vehicle_reg) {
+      detail.vehicle_license_plate = properties.vehicle_reg;
+    }
+    if (properties.eta != null) {
+      detail.eta_minutes = Number(properties.eta);
+    }
+    if (properties.pickup_address) detail.pickup_address = properties.pickup_address;
+    if (properties.destination_address) detail.destination_address = properties.destination_address;
+
+    return {
+      kind: "status",
+      recipientBookingExternalId: bookingId,
+      newStatus: normalisedStatus,
+      detail,
+    };
   }
 
   const eventType = String(payload.event_type ?? payload.event ?? payload.type ?? "");
