@@ -79,12 +79,37 @@ export async function POST(
   const rawBody = await req.text();
   const provided = req.headers.get(SIGNATURE_HEADER) ?? "";
 
-  if (!verifyHmacSha512(rawBody, provided, creds.webhookSecret)) {
+  // TEMPORARY (2026-06-08 — iCabbi staging integration).
+  //
+  // iCabbi's UI for outbound webhook configuration takes a URL only — no
+  // place to enter a signing secret. Until iCabbi confirms what signing
+  // convention they use (item #4 in ICABBI_DEPENDENCIES.md — possibly
+  // App-Key/Secret-Key as HMAC material, possibly via separate API
+  // registration, possibly no signing at all), we need a way to accept
+  // their webhooks without HMAC verification so the inbound demo flow
+  // works.
+  //
+  // ICABBI_SKIP_WEBHOOK_HMAC=true bypasses signature check ONLY. Replay
+  // protection (sent_at window), idempotency (envelope id), and rate
+  // limiting are still enforced. Every skipped verification logs a loud
+  // warning that turns up in audit + Sentry.
+  //
+  // MUST be set to false (or unset) in production once iCabbi confirms
+  // the real signing scheme. Tracked in HANDOVER.md.
+  const skipHmac = process.env.ICABBI_SKIP_WEBHOOK_HMAC === "true";
+  if (!skipHmac && !verifyHmacSha512(rawBody, provided, creds.webhookSecret)) {
     console.warn(
       `[webhook] HMAC verification failed for partner ${partnerId} (sig provided: ${provided ? "yes" : "no"})`,
     );
     await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", { raw_length: rawBody.length });
     return NextResponse.json({ error: "invalid_signature" }, { status: 401 });
+  }
+  if (skipHmac) {
+    console.warn(
+      `[webhook] HMAC verification BYPASSED for partner ${partnerId} ` +
+        `(ICABBI_SKIP_WEBHOOK_HMAC=true). Sig provided: ${provided ? "yes" : "no"}. ` +
+        `THIS IS A TEMPORARY STAGING ACCOMMODATION — must be off in production.`,
+    );
   }
 
   // Parse envelope. iCabbi/Karhoo envelope:
