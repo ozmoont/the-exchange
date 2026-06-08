@@ -12,6 +12,7 @@ import {
   LIMIT_INGEST_PER_PARTNER,
   WINDOW_INGEST_SECONDS,
 } from "@/lib/rate-limit";
+import { decryptIfNeeded } from "@/lib/crypto";
 
 /**
  * Per-partner webhook receiver. Each connected partner gets a unique URL:
@@ -68,7 +69,14 @@ export async function POST(
     return NextResponse.json({ error: "partner_not_found" }, { status: 404 });
   }
 
-  const creds = (partner.credentials ?? {}) as { webhookSecret?: string };
+  // Credentials are AES-256-GCM encrypted at rest. The on-disk shape is
+  // `{ __enc: 1, iv, ct, tag }` — without decryption, `webhookSecret` is
+  // always undefined and we'd return partner_not_connected on every event
+  // even when the partner IS connected. decryptIfNeeded handles both shapes
+  // safely (plaintext objects pass through unchanged).
+  const creds = (decryptIfNeeded(partner.credentials as Record<string, unknown> | null) ?? {}) as {
+    webhookSecret?: string;
+  };
   if (!creds.webhookSecret) {
     return NextResponse.json({ error: "partner_not_connected" }, { status: 400 });
   }
