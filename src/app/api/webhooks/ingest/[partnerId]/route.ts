@@ -120,12 +120,33 @@ export async function POST(
     );
   }
 
-  // Parse envelope. iCabbi/Karhoo envelope:
+  // Parse envelope. iCabbi/Karhoo envelope (assumed shape — iCabbi's actual
+  // shape is being learned in production, item #3 in ICABBI_DEPENDENCIES.md):
   //   { id, event_type, sent_at, checksum, attempt_number, data: stringified-json }
   let envelope: Record<string, unknown>;
   try {
-    envelope = JSON.parse(rawBody) as Record<string, unknown>;
-  } catch {
+    const parsed = rawBody ? JSON.parse(rawBody) : null;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      console.warn(
+        `[webhook] body parsed but not an object for partner ${partnerId}. ` +
+          `content-type=${req.headers.get("content-type") ?? "(none)"}. ` +
+          `parsed type=${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed}. ` +
+          `Body preview: ${rawBody.slice(0, 500)}`,
+      );
+      return NextResponse.json({ error: "invalid_envelope_shape" }, { status: 400 });
+    }
+    envelope = parsed as Record<string, unknown>;
+  } catch (err) {
+    // JSON parse threw — iCabbi may be sending form-encoded, empty body,
+    // or some other content type. Log everything so we can see what they
+    // actually sent and adjust.
+    console.warn(
+      `[webhook] JSON.parse failed for partner ${partnerId}. ` +
+        `content-type=${req.headers.get("content-type") ?? "(none)"}. ` +
+        `body length=${rawBody.length}. ` +
+        `err=${err instanceof Error ? err.message : String(err)}. ` +
+        `Body preview: ${rawBody.slice(0, 500)}`,
+    );
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
