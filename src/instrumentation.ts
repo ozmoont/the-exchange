@@ -1,14 +1,13 @@
 /**
  * Next.js instrumentation hook — runs once at server boot.
  *
- * Right now this does observability setup: logs the boot config and (when
- * activated) initialises Sentry.
+ * Sentry is active when SENTRY_DSN is set. Without it, errors still flow
+ * through the structured logger (captureError → log.error with context).
  *
- * To activate Sentry:
- *   1. pnpm add @sentry/nextjs
- *   2. Set SENTRY_DSN in Vercel env vars (Production scope, NOT Sensitive)
- *   3. Uncomment the Sentry block below
- *   4. Optional: set NEXT_PUBLIC_SENTRY_DSN if you want client-side error capture too
+ * Setup:
+ *   1. Set SENTRY_DSN in Vercel env vars (Production scope, NOT Sensitive)
+ *   2. Optional: NEXT_PUBLIC_SENTRY_DSN for client-side error capture too
+ *   3. Optional: tune tracesSampleRate via SENTRY_TRACES_SAMPLE_RATE
  *
  * See docs/OBSERVABILITY.md for the full activation walkthrough.
  */
@@ -38,45 +37,57 @@ export async function register() {
   }
 
   // ------------------------------------------------------------------------
-  // Sentry activation block — uncomment after `pnpm add @sentry/nextjs`.
+  // Sentry activation
   // ------------------------------------------------------------------------
-  //
-  // try {
-  //   const Sentry = await import("@sentry/nextjs");
-  //   Sentry.init({
-  //     dsn: sentryDsn,
-  //     environment: process.env.VERCEL_ENV ?? env,
-  //     // Adjust sample rates as traffic grows. At pilot scale, 1.0 is fine
-  //     // since volume is small and we want every error.
-  //     tracesSampleRate: 0.1,
-  //     // Filter noise:
-  //     beforeSend(event, hint) {
-  //       // Don't capture 401s from webhook ingest — those are signature
-  //       // mismatches and are expected during onboarding.
-  //       const err = hint.originalException;
-  //       if (err instanceof Error && /invalid_signature|stale_event/.test(err.message)) {
-  //         return null;
-  //       }
-  //       return event;
-  //     },
-  //   });
-  //
-  //   // Wire captureError → Sentry. Now every captureError call ALSO sends
-  //   // to Sentry with the context fields as Sentry tags.
-  //   setCaptureFn((err, context) => {
-  //     Sentry.captureException(err, { tags: context as Record<string, string> });
-  //   });
-  //
-  //   log.info("Sentry initialised");
-  // } catch (err) {
-  //   log.warn("Sentry init failed", { err });
-  // }
+  // Dynamic import keeps `@sentry/nextjs` out of the edge bundle and means
+  // typecheck doesn't require the package to be installed in dev sandboxes
+  // (a missing module here logs a warning rather than crashing boot).
+  try {
+    // Module path typed loose so typecheck doesn't require @sentry/nextjs
+    // to be installed in dev sandboxes. Production deploy has it via
+    // package.json — Sentry's actual types resolve at runtime.
+    //
+    // @ts-expect-error — @sentry/nextjs is a runtime dep declared in
+    // package.json; types resolve at runtime. The catch handles the case
+    // where the package isn't installed in a dev sandbox.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sentryModule: any = await import("@sentry/nextjs").catch(() => null);
+    if (!sentryModule) {
+      log.warn(
+        "SENTRY_DSN is set but @sentry/nextjs is not installed. Run `pnpm add @sentry/nextjs` and redeploy.",
+      );
+      return;
+    }
+    const Sentry = sentryModule;
 
-  // Until the block above is uncommented, observability stays at structured-
-  // log level. captureError() in observability.ts logs the error with context.
-  log.warn(
-    "SENTRY_DSN is set but @sentry/nextjs is not installed. Run `pnpm add @sentry/nextjs` and uncomment the init block in src/instrumentation.ts.",
-  );
+    const tracesSampleRate = Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1);
 
-  void setCaptureFn;
+    Sentry.init({
+      dsn: sentryDsn,
+      environment: process.env.VERCEL_ENV ?? env,
+      // Adjust sample rate via env var. At pilot scale, 0.1 (10%) keeps
+      // the quota comfortable while still surfacing every error path.
+      tracesSampleRate: Number.isFinite(tracesSampleRate) ? tracesSampleRate : 0.1,
+      // Filter noise: don't capture 401s from webhook ingest — those are
+      // signature mismatches and are expected during onboarding.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      beforeSend(event: any, hint: any) {
+        const err = hint?.originalException;
+        if (err instanceof Error && /invalid_signature|stale_event/.test(err.message)) {
+          return null;
+        }
+        return event;
+      },
+    });
+
+    // Wire captureError → Sentry. Now every captureError call ALSO sends
+    // to Sentry with the context fields as Sentry tags.
+    setCaptureFn((err, context) => {
+      Sentry.captureException(err, { tags: context as Record<string, string> });
+    });
+
+    log.info("Sentry initialised", { traces_sample_rate: tracesSampleRate });
+  } catch (err) {
+    log.warn("Sentry init failed", { err: err instanceof Error ? err.message : String(err) });
+  }
 }
