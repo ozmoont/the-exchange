@@ -1,6 +1,6 @@
 # The Exchange — Project Overview
 
-*For the product team. Updated 2026-05-30 end of day.*
+*For the product team. Updated 2026-06-09 mid-afternoon.*
 
 This is a status snapshot for anyone joining the project or needing to brief a stakeholder. Read the **Executive summary** first; everything below is the deeper unpacking of each line in it.
 
@@ -8,18 +8,17 @@ This is a status snapshot for anyone joining the project or needing to brief a s
 
 ## Executive summary
 
-**What it is.** The Exchange is middleware that sits beside fleet dispatch systems (iCabbi being the primary integration) and lets multiple transport networks route bookings between each other. When 247 Birmingham can't fulfil a job from a customer, The Exchange picks the best partner fleet to take it — based on geography, fees, and historical reliability — and pushes it to them, tracks the trip, and surfaces the fee snapshot for billing.
+**What it is.** The Exchange is middleware that sits beside fleet dispatch systems (iCabbi being the primary integration) and lets multiple transport networks route bookings between each other. When 247 Birmingham can't fulfil a job from a customer, The Exchange picks the best partner fleet to take it — based on geography, fees, and live availability — and pushes it to them, tracks the trip, surfaces the fee snapshot, and reconciles afterwards. It also runs the inverse flow: when iCabbi has no driver coverage, The Exchange acts as a virtual fleet to receive overflow and routes that booking out to non-iCabbi external partners (FreeNow, CMAC, future others).
 
-**Where we are.** End of session 2 (today), the product is **feature-complete against the locked MVP scope** plus six of the eight P0 hardening items from the go-live readiness doc. Live at `the-exchange-z2wp.vercel.app` with 100 demo UK fleets, ~470 routed bookings, and an active background-tick demo so the dashboard shows real movement.
+**Where we are.** End of session 5 (today), the product is **functionally complete against ~96% of the iCabbi BDD spec** that defines the full Exchange contract — inbound (Epic 1), outbound (Epic 2), the configurable mapping layer (Epic 3), the virtual-fleet identity + loop detection (Epic 4), and the observability and audit trail (Epic 5). Live at `the-exchange-z2wp.vercel.app`. First confirmed real-iCabbi booking round-tripped today (COID 1102 staging, driver 1889 assigned) — Position #2 (decision #8) validated end-to-end.
 
-**What gates a pilot now.** Three things, none of them code:
-1. A friendly iCabbi tenant volunteering App-Key/Secret-Key for a real-credential test
-2. The sponsor decisions in `GO_LIVE_READINESS.md` (pricing, pilot scope, data-controller posture)
-3. Legal: DPA template + ICO registration + pen test booking
+**What gates a pilot now.** Two items, both on iCabbi's side:
+1. **Status-back endpoint spec** — when a recipient advances a booking lifecycle, what URL + payload shape do we POST to on iCabbi's side? Engineering ~1h once known. Tracked as task #208.
+2. **Virtual-fleet registration on COID 1102** — iCabbi registers The Exchange as a fleet inside their Networking Engine so dispatch can offer overflow to us via standard fleet APIs. Commercial step, not engineering.
 
-The engineering bottleneck has been cleared. **The strategic bottleneck is partner conversations.**
+Plus legal scaffolding (DPA template, ICO registration, pen test booking) which OG is running in parallel.
 
-**Honest realistic timeline.** First pilot fleet live in 6–8 weeks if a contract backend engineer joins for the pre-launch period. 12–16 weeks if solo. The 8-week pre-launch sprint plan is in `GO_PLAN.md`.
+**Honest realistic timeline.** First pilot fleet live in **3–5 weeks** from today if iCabbi's two unblocks land inside two weeks. The engineering critical path is essentially closed.
 
 ---
 
@@ -28,6 +27,11 @@ The engineering bottleneck has been cleared. **The strategic bottleneck is partn
 A taxi company gets a booking they can't fulfil — wrong area, busy, wrong vehicle type, etc. Today, that booking either gets refused or sent to a partner the company has a one-to-one relationship with. The Exchange replaces those bilateral hand-offs with a network: every partner agrees once on who they'll work with, and our routing engine picks the best recipient per booking. The originator's customer keeps the same experience; the partner who runs the trip gets paid via a fee snapshot we lock in at routing time; we sit in the middle as the decision layer and audit trail.
 
 **Strategically (Position #2 — locked):** iCabbi already has a "partnership coid" mechanism that ships bookings between two iCabbi tenants. We don't replace it — we sit on top. iCabbi is the transport; The Exchange is the decision layer. That distinction lets us bridge iCabbi to non-iCabbi systems (CMAC, Karhoo/FreeNow, Cordic) under one routing rulebook.
+
+**Two flows we built (recap):**
+
+- **Inbound (Epic 1)** — external partner POSTs a booking via `/api/webhooks/ingest/[partnerId]` → routing engine picks best iCabbi fleet → status webhooks flow back to originator. Validated end-to-end against COID 1102 staging today.
+- **Outbound (Epic 2 — H1.5)** — iCabbi has no driver → offers booking to us via `/api/icabbi/bookings` (Bearer-authed) → routing engine excludes iCabbi-kind candidates (loop detection) → pushes to non-iCabbi partner. Validated end-to-end with synthetic FreeNow stand-in today.
 
 ---
 
@@ -92,12 +96,13 @@ A taxi company gets a booking they can't fulfil — wrong area, busy, wrong vehi
 
 **The stack:**
 - **Frontend / API:** Next.js 15 (App Router, TypeScript strict)
-- **DB:** Neon Postgres + Drizzle ORM (versioned migrations as of today)
-- **Auth:** Magic link via Resend + HMAC-signed session cookies + 3-role RBAC
+- **DB:** Neon Postgres + Drizzle ORM (versioned migrations)
+- **Auth:** Magic link via Resend + HMAC-signed session cookies + 3-role RBAC. Inbound partner API: Bearer token per partner.
 - **Hosting:** Vercel (serverless functions + cron)
 - **Queue:** Postgres-polling drain (Inngest/Trigger.dev upgrade path documented)
-- **Observability:** Structured JSON logger + Sentry-ready hook (one `pnpm add` away)
+- **Observability:** Structured JSON logger + Sentry wired (set `SENTRY_DSN` to activate)
 - **Rate limiting:** Postgres-backed counters (Upstash Redis upgrade path documented)
+- **Tests + CI:** Vitest unit tests covering payload normalisation, mapping engine, accept-deadline clamp logic, fan-out fallback. GitHub Action runs typecheck + tests on every PR.
 
 ---
 
@@ -111,7 +116,7 @@ A taxi company gets a booking they can't fulfil — wrong area, busy, wrong vehi
 | **Distribution** | `/distribution` | UK map of fleets + pickup heat. Clickable stat cards for routed/completed/in-flight/no-match/errors/paused. Region breakdown. 14-day sparkline. Top 50 winning fleets table with reliability column. Synthetic-monitor widget. "Fire 50 jobs" demo button. |
 | **Bookings** | `/bookings` | All routed bookings with friendly status labels, route addresses, fleet+driver, duration, fee. Filter chips by status group. Synthetic-hide toggle. |
 | **Booking detail** | `/transits/[id]` | Status timeline, fee snapshot, **routing decision trace** (waterfall attempts + scores + reroute history), reconciliation panel, driver detail (PII-gated), accept-window countdown, **admin retry** button on failed bookings. |
-| **Partners** | `/partners`, `/partners/[id]`, `/partners/[id]/edit`, `/partners/[id]/integration` | Directory, detail with reliability/earnings/pause-receiving, edit including driver-detail-visibility toggle, iCabbi credential entry with auto-webhook-registration. |
+| **Partners** | `/partners`, `/partners/[id]`, `/partners/[id]/edit`, `/partners/[id]/integration`, `/partners/[id]/mappings` | Directory, detail with reliability/earnings/pause-receiving, edit including driver-detail-visibility toggle + per-partner offer window, iCabbi credential entry with auto-webhook-registration + Bearer token issuance, H2 mapping-config editor (canonical field coverage at a glance + JSON textarea) for partners on the `generic_mapped` adapter. |
 | **Routing rules** | `/rules`, `/rules/[a]/[b]` | Bilateral allow/block matrix + per-pair detail. |
 | **Fees** | `/fees`, `/fees/[recipientId]/pair` | Per-partner network fees + trip-level passenger add-ons + per-pair overrides. |
 | **Audit log** | `/audit` | Filterable event log. Every consequential admin action with before/after JSON. |
@@ -142,7 +147,13 @@ Fleet roles see only their own partner everywhere (defense-in-depth on every pag
 
 - **`/api/cron/process-queue`** — drains the async routing queue every minute
 - **`/api/cron/synthetic-test`** — hourly synthetic booking test, records pass/fail
+- **`/api/cron/retry-webhooks`** — every minute, retries failed outbound deliveries at 30s / 2min / 10min backoff (BDD Story 1.3)
 - **`/api/webhooks/ingest/[partnerId]`** — inbound webhook receiver with HMAC + rate-limit + replay protection
+- **`/api/icabbi/bookings`** (POST) — iCabbi-side offer endpoint (H1.5 outbound flow, Bearer auth)
+- **`/api/icabbi/bookings/[bookingId]`** (PATCH) — edit-before-allocation
+- **`/api/icabbi/cancellations`** (POST) — cancellations from iCabbi originators
+- **`/api/quote`** (POST) — parallel availability/ETA fan-out across eligible partners (1500ms budget, BDD NFR)
+- **`/status`** — public status page (no auth, no PII) for partners and uptime monitors
 - **`/api/webhooks/status`** — partner status update receiver
 - **`/api/health`** — DB ping + boot status
 - **`/api/auth/*`** — magic-link verify, logout
