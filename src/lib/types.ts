@@ -165,7 +165,41 @@ export interface PartnerAdapter {
    * conversion if mixing GBP/EUR.
    */
   fetchBookingPayment?(externalId: string): Promise<BookingPaymentSummary | null>;
+
+  /**
+   * Optional. Tier-1 #3 (BDD Epic 1.2 / 2.2 / NFR fan-out): ask the partner
+   * "can you fulfil this booking, what's your ETA and price?" before
+   * committing. Used by the routing fan-out to rank candidates by live
+   * availability rather than only static metadata (fee + geo + reliability).
+   *
+   * Adapters that don't expose a quote API leave this undefined — the
+   * routing engine treats them as "available with synthetic ETA derived
+   * from distance" so they remain eligible candidates.
+   *
+   * Implementation should:
+   *   - Return within 1500ms total (BDD NFR). Use AbortSignal.timeout()
+   *   - Return `available: false` rather than throwing on a soft no
+   *   - Set fareEstimatePence + etaMinutes when known
+   */
+  quote?(input: QuoteInput): Promise<QuoteResult>;
 }
+
+export type QuoteInput = {
+  booking: NormalisedBooking;
+};
+
+export type QuoteResult = {
+  /** Can the partner take this booking right now? */
+  available: boolean;
+  /** ETA in minutes if available. Omit for unavailable. */
+  etaMinutes?: number;
+  /** Quoted fare in pence if known. Omit if the partner doesn't price up front. */
+  fareEstimatePence?: number;
+  /** Optional currency override; defaults to GBP. */
+  currency?: string;
+  /** Free-form reason when available=false (debug + logging). */
+  reason?: string;
+};
 
 export type BookingPaymentSummary = {
   /** What the partner billed in total for this booking, in pence. */

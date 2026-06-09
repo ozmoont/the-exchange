@@ -4,6 +4,8 @@ import type {
   CreateBookingResult,
   CancelBookingInput,
   BookingPaymentSummary,
+  QuoteInput,
+  QuoteResult,
 } from "@/lib/types";
 
 /**
@@ -67,5 +69,19 @@ export class MockFreeNowAdapter implements PartnerAdapter {
     // H2 this method gets a real implementation against their webhook
     // payload shape.
     return null;
+  }
+
+  async quote({ booking }: QuoteInput): Promise<QuoteResult> {
+    // Mock: always available, ETA varies with vehicle type to make the
+    // fan-out ranking visible during demos. Real FreeNow integration in H2
+    // will call their actual quote API.
+    await new Promise((r) => setTimeout(r, 60)); // simulate ~60ms RTT
+    const etaMinutes = booking.vehicleType === "exec" ? 8 : 5;
+    return {
+      available: true,
+      etaMinutes,
+      fareEstimatePence: booking.fareEstimatePence,
+      currency: "GBP",
+    };
   }
 }
