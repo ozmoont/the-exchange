@@ -121,7 +121,9 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
   for (const r of trace.rerouteAttempts ?? []) excluded.add(r.recipientId);
   if (t.recipientPartnerId) excluded.add(t.recipientPartnerId);
 
-  const ranked = await rankCandidates(t.originatorPartnerId, booking);
+  // A1: reroute path also uses fan-out so the next candidate is ranked
+  // by live availability + ETA, not just metadata.
+  const ranked = await rankCandidates(t.originatorPartnerId, booking, { useFanOut: true });
   const remaining = ranked.filter((c) => !excluded.has(c.recipientId));
 
   if (remaining.length === 0) {

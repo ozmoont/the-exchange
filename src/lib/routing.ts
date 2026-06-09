@@ -89,7 +89,10 @@ export async function routeBooking(args: {
 
   const transit = await insertTransit(originatorPartnerId, booking, "routing", null);
 
-  const candidates = await rankCandidates(originatorPartnerId, booking);
+  // A1: opt into fan-out so live partner availability + ETA drive the
+  // routing decision, not just metadata. Adapters without quote() get a
+  // synthetic fallback so existing partners stay eligible.
+  const candidates = await rankCandidates(originatorPartnerId, booking, { useFanOut: true });
   if (candidates.length === 0) {
     await markTransit(transit.id, "no_match", { reason: "no_eligible_partner" });
     return { transitId: transit.id, outcome: "no_match" };
@@ -239,7 +242,18 @@ export type RankedCandidate = {
   /** Score breakdown — useful for trace UI. */
   feeTerm: number;
   distanceTerm: number;
-  score: number; // lower = better, sum of feeTerm + distanceTerm + reliabilityPenaltyApplied
+  /**
+   * Live ETA term — only present when the routing was run with
+   * useFanOut=true and the candidate's quote() returned an etaMinutes.
+   * Lower ETA = lower etaTerm contribution = better rank.
+   */
+  etaTerm?: number;
+  /**
+   * Live quote result for this candidate — present only when useFanOut=true.
+   * Contains etaMinutes + fareEstimatePence + available status.
+   */
+  liveQuote?: { etaMinutes: number | null; fareEstimatePence: number | null; fromAdapter: boolean };
+  score: number; // lower = better
   /**
    * Partner's declared offer window in seconds, if set. When the booking
    * gets pushed to this candidate, acceptDeadlineFor() honours this
@@ -248,42 +262,119 @@ export type RankedCandidate = {
   offerWindowSeconds: number | null;
 };
 
+/**
+ * A1 — Weight applied to live ETA in the candidate score when the routing
+ * engine ran fan-out (useFanOut=true). Tuned so that a 5-minute-faster ETA
+ * is roughly equivalent to a 5km closer centroid — i.e. the live ETA and
+ * the distance term carry comparable weight, but real-world ETA wins
+ * when the partner actually called out and said "I can be there in 3 min."
+ */
+const ETA_MINUTE_WEIGHT = 8;
+
+export type RankCandidatesOptions = {
+  /**
+   * Per iCabbi BDD Epic 1.2 / 2.2 / NFR. When true, the routing engine
+   * fans out quote() in parallel (1500ms timeout, synthetic fallback for
+   * adapters without quote), drops candidates that returned
+   * available:false, and weights live ETA into the score. When false
+   * (default), the candidate set is built from metadata only — faster
+   * but doesn't see real-time availability.
+   *
+   * Production routing (`routeBooking`) opts in. The `/api/quote`
+   * endpoint runs its own fan-out and doesn't need this.
+   */
+  useFanOut?: boolean;
+};
+
 export async function rankCandidates(
   originatorPartnerId: string,
   booking: NormalisedBooking,
+  options: RankCandidatesOptions = {},
 ): Promise<RankedCandidate[]> {
   const eligible = await findEligibleRecipients(originatorPartnerId, booking);
   if (eligible.length === 0) return [];
 
-  const ranked: RankedCandidate[] = await Promise.all(
-    eligible.map(async (p) => {
-      const fee = await resolveFeeSnapshot(originatorPartnerId, p.id, booking);
-      const distanceKm =
-        p.centroidLat !== null && p.centroidLng !== null
-          ? haversineKm(booking.pickup.lat, booking.pickup.lng, p.centroidLat, p.centroidLng)
-          : null;
-      // Partners without geo set get a neutral 25km — fee dominates for them.
-      const effectiveDistance = distanceKm ?? 25;
+  // A1: optionally fan out quote() to filter unavailable candidates and
+  // pull live ETA into the score. Lazy import to keep the import graph
+  // simple — fan-out-quote depends on the adapter registry which
+  // depends back on this file in some flows.
+  const quoteByRecipient = new Map<
+    string,
+    { available: boolean; etaMinutes: number | null; fareEstimatePence: number | null; fromAdapter: boolean }
+  >();
+  if (options.useFanOut) {
+    const { fanOutQuote } = await import("@/lib/fan-out-quote");
+    const fanOutInput = eligible.map((p) => ({
+      recipientId: p.id,
+      centroidLat: p.centroidLat,
+      centroidLng: p.centroidLng,
+    }));
+    const quoteResults = await fanOutQuote(fanOutInput, booking);
+    for (const r of quoteResults) {
+      quoteByRecipient.set(r.recipientId, {
+        available: r.quote.available,
+        etaMinutes: r.quote.etaMinutes ?? null,
+        fareEstimatePence: r.quote.fareEstimatePence ?? null,
+        fromAdapter: r.fromAdapter,
+      });
+    }
+  }
 
-      const feeTerm = fee.receiveFeePence * FEE_PER_PENCE_WEIGHT;
-      const distanceTerm = effectiveDistance * DISTANCE_KM_WEIGHT;
-      const reliabilityPenaltyApplied = reliabilityPenalty(p.acceptanceRate, p.totalPushed7d);
-      const score = feeTerm + distanceTerm + reliabilityPenaltyApplied;
+  const ranked: RankedCandidate[] = (
+    await Promise.all(
+      eligible.map(async (p) => {
+        // A1: when fan-out is enabled, drop candidates that returned
+        // available:false. The quote() call gave them a chance to say "no"
+        // — respect it.
+        const quote = quoteByRecipient.get(p.id);
+        if (options.useFanOut && quote && !quote.available) return null;
 
-      return {
-        recipientId: p.id,
-        fee,
-        distanceKm,
-        acceptanceRate: p.acceptanceRate,
-        totalPushed7d: p.totalPushed7d,
-        reliabilityPenaltyApplied,
-        feeTerm,
-        distanceTerm,
-        score,
-        offerWindowSeconds: p.offerWindowSeconds,
-      };
-    }),
-  );
+        const fee = await resolveFeeSnapshot(originatorPartnerId, p.id, booking);
+        const distanceKm =
+          p.centroidLat !== null && p.centroidLng !== null
+            ? haversineKm(booking.pickup.lat, booking.pickup.lng, p.centroidLat, p.centroidLng)
+            : null;
+        // Partners without geo set get a neutral 25km — fee dominates for them.
+        const effectiveDistance = distanceKm ?? 25;
+
+        const feeTerm = fee.receiveFeePence * FEE_PER_PENCE_WEIGHT;
+        const distanceTerm = effectiveDistance * DISTANCE_KM_WEIGHT;
+        const reliabilityPenaltyApplied = reliabilityPenalty(p.acceptanceRate, p.totalPushed7d);
+
+        // A1: ETA term — only when fan-out gave us a real (or synthetic)
+        // ETA. Real ETA from the adapter's quote() carries more weight
+        // than a metadata-derived estimate because it reflects what the
+        // partner can actually deliver right now.
+        const etaMinutes = quote?.etaMinutes ?? null;
+        const etaTerm = etaMinutes !== null ? etaMinutes * ETA_MINUTE_WEIGHT : 0;
+
+        const score = feeTerm + distanceTerm + reliabilityPenaltyApplied + etaTerm;
+
+        return {
+          recipientId: p.id,
+          fee,
+          distanceKm,
+          acceptanceRate: p.acceptanceRate,
+          totalPushed7d: p.totalPushed7d,
+          reliabilityPenaltyApplied,
+          feeTerm,
+          distanceTerm,
+          ...(options.useFanOut && quote
+            ? {
+                etaTerm,
+                liveQuote: {
+                  etaMinutes,
+                  fareEstimatePence: quote.fareEstimatePence,
+                  fromAdapter: quote.fromAdapter,
+                },
+              }
+            : {}),
+          score,
+          offerWindowSeconds: p.offerWindowSeconds,
+        } satisfies RankedCandidate;
+      }),
+    )
+  ).filter((c): c is RankedCandidate => c !== null);
 
   ranked.sort((a, b) => a.score - b.score);
   return ranked;
