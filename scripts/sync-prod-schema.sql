@@ -77,6 +77,18 @@ CREATE INDEX IF NOT EXISTS synthetic_test_runs_ran_at_idx ON synthetic_test_runs
 ALTER TABLE partners
   ADD COLUMN IF NOT EXISTS offer_window_seconds integer;
 
+-- ---------- H2 mapping layer (Epic 3) ----------
+-- auth_mechanism enum
+DO $$ BEGIN
+  CREATE TYPE auth_mechanism AS ENUM ('icabbi_app_secret', 'oauth2', 'api_key_header', 'basic');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+ALTER TABLE partners
+  ADD COLUMN IF NOT EXISTS field_mappings  jsonb,
+  ADD COLUMN IF NOT EXISTS auth_mechanism  auth_mechanism NOT NULL DEFAULT 'icabbi_app_secret';
+
 -- ---------- Tier-1 #2: webhook delivery retry tracking ----------
 ALTER TABLE webhook_deliveries
   ADD COLUMN IF NOT EXISTS attempts        integer NOT NULL DEFAULT 0,

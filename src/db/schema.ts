@@ -22,6 +22,24 @@ export const partnerKindEnum = pgEnum("partner_kind", [
   "external_corporate",  // CMAC-shaped corporate booking
 ]);
 
+/**
+ * H2 mapping layer (Epic 3) — outbound auth mechanism for non-iCabbi
+ * partners. Encrypted auth-config shape varies per mechanism, stored in
+ * partners.credentials.
+ *
+ * - icabbi_app_secret — App-Key + Secret-Key pair (existing iCabbi flow)
+ * - oauth2           — Bearer with token refresh (token_url, client_id,
+ *                      client_secret, scopes)
+ * - api_key_header   — single static API key in a configurable header
+ * - basic            — HTTP Basic
+ */
+export const authMechanismEnum = pgEnum("auth_mechanism", [
+  "icabbi_app_secret",
+  "oauth2",
+  "api_key_header",
+  "basic",
+]);
+
 export const participationModeEnum = pgEnum("participation_mode", [
   "send_only",
   "receive_only",
@@ -141,6 +159,19 @@ export const partners = pgTable("partners", {
   // and PREBOOK_ACCEPT_WINDOW_MS (5min) for pre-book bookings. Operators
   // set this to match the partner's contractual response time.
   offerWindowSeconds: integer("offer_window_seconds"),
+  // H2 mapping layer (Epic 3). Per-partner translation config — field
+  // renames, transformations, value lookups, and endpoint URLs. NULL =
+  // no mapping configured; the partner uses its hand-coded adapter via
+  // adapterKey (preserved for MVP per decision #13). When set, the
+  // generic_mapped adapter reads this config at request time. Shape:
+  // see docs/specs/H2-mapping-layer.md.
+  fieldMappings: jsonb("field_mappings").$type<Record<string, unknown> | null>(),
+  // H2 outbound auth mechanism — only relevant when fieldMappings is set
+  // (the hand-coded adapters carry their own auth). Defaults to
+  // icabbi_app_secret to preserve iCabbi-shaped partners' existing
+  // behaviour. New non-iCabbi partners pick the right mechanism on
+  // onboarding.
+  authMechanism: authMechanismEnum("auth_mechanism").notNull().default("icabbi_app_secret"),
   // freeform billing notes — captured during negotiation
   billingNotes: text("billing_notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
