@@ -3,6 +3,7 @@ import { MockICabbiAdapter } from "./mock-icabbi";
 import { MockCMACAdapter } from "./mock-cmac";
 import { MockFreeNowAdapter } from "./mock-freenow";
 import { ICabbiAdapter, type ICabbiCredentials } from "./icabbi";
+import { GenericMappedAdapter } from "./generic-mapped";
 import { db } from "@/db/client";
 import { partners } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -16,7 +17,14 @@ import { decryptIfNeeded } from "@/lib/crypto";
  * credentials saved. Flip via partners.adapterKey or the partner edit page.
  */
 
-type AdapterFactory = (partnerId: string, credentials: Record<string, unknown> | null) => PartnerAdapter;
+// All factories accept (partnerId, credentials, fieldMappings). Hand-coded
+// adapters ignore the third arg; generic_mapped uses it. Single signature
+// keeps the factories map's typing clean.
+type AdapterFactory = (
+  partnerId: string,
+  credentials: Record<string, unknown> | null,
+  fieldMappings: unknown,
+) => PartnerAdapter;
 
 const factories: Record<string, AdapterFactory> = {
   mock_icabbi: (partnerId, creds) =>
@@ -29,7 +37,15 @@ const factories: Record<string, AdapterFactory> = {
     }
     return new ICabbiAdapter(partnerId, creds as unknown as ICabbiCredentials);
   },
-  // cmac: (partnerId, creds) => new CMACAdapter(partnerId, creds as CMACCreds),
+  // H2 — generic configuration-driven adapter. Reads partner.fieldMappings
+  // + partner.credentials + partner.authMechanism at construction. No
+  // partner-specific code path.
+  generic_mapped: (partnerId, creds, fieldMappings) =>
+    new GenericMappedAdapter(
+      partnerId,
+      (creds ?? {}) as ConstructorParameters<typeof GenericMappedAdapter>[1],
+      fieldMappings,
+    ),
 };
 
 const cache = new Map<string, PartnerAdapter>();
@@ -42,7 +58,9 @@ export async function getAdapterForPartner(partnerId: string): Promise<PartnerAd
   if (!factory) throw new Error(`No adapter registered for key "${row.adapterKey}"`);
   // Credentials may be encrypted at rest — decryptIfNeeded is plaintext-safe.
   const creds = decryptIfNeeded(row.credentials as Record<string, unknown> | null);
-  const adapter = factory(partnerId, creds);
+  // Pass fieldMappings as a third arg for adapters that consume it
+  // (generic_mapped). Hand-coded adapters ignore it.
+  const adapter = factory(partnerId, creds, row.fieldMappings);
   cache.set(partnerId, adapter);
   return adapter;
 }
