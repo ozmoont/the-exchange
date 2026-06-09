@@ -45,7 +45,32 @@ const MAX_WATERFALL = 5;
 export const ASAP_ACCEPT_WINDOW_MS = 90_000;        // 90 seconds
 export const PREBOOK_ACCEPT_WINDOW_MS = 5 * 60_000; // 5 minutes
 
-export function acceptDeadlineFor(bookingType: "asap" | "prebook"): Date {
+/**
+ * Compute the accept-window deadline for a transit. Per iCabbi BDD spec
+ * Section 7 NFR ("Each partner has a configurable offer window"), recipients
+ * can declare their own SLA via `partners.offerWindowSeconds`. When set,
+ * that value (clamped to a sensible range) wins. When null, we fall back
+ * to the booking-type-based defaults — preserves behaviour for partners
+ * we haven't explicitly configured.
+ *
+ * Clamp: 15s minimum (any shorter and the partner can't even react), 30min
+ * maximum (longer and the originator's passenger experience suffers).
+ */
+const MIN_OFFER_WINDOW_S = 15;
+const MAX_OFFER_WINDOW_S = 30 * 60;
+
+export function acceptDeadlineFor(
+  bookingType: "asap" | "prebook",
+  recipientOfferWindowSeconds?: number | null,
+): Date {
+  if (
+    typeof recipientOfferWindowSeconds === "number" &&
+    Number.isFinite(recipientOfferWindowSeconds) &&
+    recipientOfferWindowSeconds >= MIN_OFFER_WINDOW_S
+  ) {
+    const clamped = Math.min(recipientOfferWindowSeconds, MAX_OFFER_WINDOW_S);
+    return new Date(Date.now() + clamped * 1000);
+  }
   const ms = bookingType === "prebook" ? PREBOOK_ACCEPT_WINDOW_MS : ASAP_ACCEPT_WINDOW_MS;
   return new Date(Date.now() + ms);
 }
@@ -91,6 +116,7 @@ export async function routeBooking(args: {
   let winnerRecipientServerName: string | null = null;
   let winnerRecipientSiteId: string | null = null;
   let winnerTrackMyTaxiLink: string | null = null;
+  let winnerOfferWindowSeconds: number | null = null;
 
   for (let i = 0; i < Math.min(MAX_WATERFALL, candidates.length); i++) {
     const c = candidates[i];
@@ -115,6 +141,7 @@ export async function routeBooking(args: {
       winnerRecipientId = c.recipientId;
       winnerFeeSnapshot = c.fee;
       winnerExternalId = result.externalId;
+      winnerOfferWindowSeconds = c.offerWindowSeconds;
       if (result.partnership) {
         winnerPartnershipCoid = result.partnership.coid ?? null;
         winnerRecipientClientId = result.partnership.clientId ?? null;
@@ -178,7 +205,7 @@ export async function routeBooking(args: {
     recipientServerName: winnerRecipientServerName,
     recipientSiteId: winnerRecipientSiteId,
     trackMyTaxiLink: winnerTrackMyTaxiLink,
-    acceptDeadline: acceptDeadlineFor(booking.bookingType),
+    acceptDeadline: acceptDeadlineFor(booking.bookingType, winnerOfferWindowSeconds),
     updatedAt: new Date(),
   }).where(eq(transits.id, transit.id));
 
@@ -213,6 +240,12 @@ export type RankedCandidate = {
   feeTerm: number;
   distanceTerm: number;
   score: number; // lower = better, sum of feeTerm + distanceTerm + reliabilityPenaltyApplied
+  /**
+   * Partner's declared offer window in seconds, if set. When the booking
+   * gets pushed to this candidate, acceptDeadlineFor() honours this
+   * value (clamped). Null = fall back to global booking-type defaults.
+   */
+  offerWindowSeconds: number | null;
 };
 
 export async function rankCandidates(
@@ -247,6 +280,7 @@ export async function rankCandidates(
         feeTerm,
         distanceTerm,
         score,
+        offerWindowSeconds: p.offerWindowSeconds,
       };
     }),
   );
@@ -262,6 +296,7 @@ type EligiblePartner = {
   serviceRadiusKm: number | null;
   acceptanceRate: number | null;
   totalPushed7d: number | null;
+  offerWindowSeconds: number | null;
 };
 
 async function findEligibleRecipients(
@@ -339,6 +374,7 @@ async function findEligibleRecipients(
       acceptanceRate: p.acceptanceRate,
       totalPushed7d: p.totalPushed7d,
       serviceRadiusKm: p.serviceRadiusKm,
+      offerWindowSeconds: p.offerWindowSeconds,
     }));
 }
 

@@ -134,6 +134,13 @@ export const partners = pgTable("partners", {
   medianAcceptanceMs: integer("median_acceptance_ms"),
   totalPushed7d: integer("total_pushed_7d"),
   metricsUpdatedAt: timestamp("metrics_updated_at"),
+  // Per-partner offer window in seconds. Replaces the global 90s/5min split
+  // for partners who declare their own SLA (per iCabbi BDD Section 7 NFR
+  // "Each partner has a configurable offer window. Default 45 seconds").
+  // When null, falls back to global ASAP_ACCEPT_WINDOW_MS (90s) for ASAP
+  // and PREBOOK_ACCEPT_WINDOW_MS (5min) for pre-book bookings. Operators
+  // set this to match the partner's contractual response time.
+  offerWindowSeconds: integer("offer_window_seconds"),
   // freeform billing notes — captured during negotiation
   billingNotes: text("billing_notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -420,10 +427,26 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   //   error               — uncaught exception during processing
   outcome: text("outcome"),
   processedAt: timestamp("processed_at"),
+  // Tier-1 #2: retry tracking for outbound deliveries that hit
+  // 'delivery_failed'. Cron-driven retry loop reads these columns and
+  // re-attempts at 30s / 2min / 10min per BDD Story 1.3.
+  // - attempts: how many delivery attempts have run (1 = first try only)
+  // - nextAttemptAt: when the next retry should fire. NULL = no retry queued
+  //   (either delivered, exhausted, or never failed)
+  // - flaggedAt: when we gave up retrying. Set after 3 failed attempts to
+  //   surface in the inspector for admin review
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at"),
+  flaggedAt: timestamp("flagged_at"),
 }, (t) => ({
   uniq: unique("webhook_deliveries_unique").on(t.source, t.sourceEventId),
   // P1-E5: /webhooks inspector orders by received_at DESC LIMIT 100.
   receivedAtIdx: index("webhook_deliveries_received_at_idx").on(t.receivedAt.desc()),
+  // Tier-1 #2: retry cron picks rows by nextAttemptAt < now AND attempts<3.
+  // Partial index on rows that are actually retry-eligible keeps it tiny.
+  retryQueueIdx: index("webhook_deliveries_retry_queue_idx")
+    .on(t.nextAttemptAt)
+    .where(sql`next_attempt_at IS NOT NULL`),
 }));
 
 // ---------- network-level controls ----------

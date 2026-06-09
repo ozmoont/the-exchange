@@ -48,6 +48,7 @@ async function savePartnerAction(formData: FormData) {
     webhookUrl: nullable(formData.get("webhookUrl")),
     driverDetailsRequired: formData.get("driverDetailsRequired") === "on",
     billingNotes: nullable(formData.get("billingNotes")),
+    offerWindowSeconds: parseOfferWindow(formData.get("offerWindowSeconds")),
     updatedAt: new Date(),
   };
 
@@ -75,6 +76,20 @@ async function savePartnerAction(formData: FormData) {
 function nullable(raw: FormDataEntryValue | null): string | null {
   const s = String(raw ?? "").trim();
   return s.length ? s : null;
+}
+
+/**
+ * Parse the offer-window field. Blank string = null = use global defaults.
+ * Reject anything outside the routing.ts clamp range (15-1800s) with null
+ * so the routing engine's own clamp falls back cleanly. Avoids accidentally
+ * setting a 1-second offer window via the UI.
+ */
+function parseOfferWindow(raw: FormDataEntryValue | null): number | null {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 15 || n > 1800) return null;
+  return Math.round(n);
 }
 
 function csvList(raw: FormDataEntryValue | null): string[] {
@@ -233,6 +248,28 @@ export default async function EditPartnerPage({
                 Pass driver name / phone / vehicle reg through to demand fleet
               </span>
             </label>
+          </Field>
+
+          <Field
+            label="Offer window (seconds)"
+            hint={
+              "How long this partner has to accept a booking before we reroute. " +
+              "Per iCabbi BDD NFR — default is 45s. Leave blank to use the " +
+              "global booking-type defaults (90s ASAP / 5min pre-book). " +
+              "Accepted range: 15 – 1800. Anything outside this range falls " +
+              "back to defaults."
+            }
+          >
+            <input
+              name="offerWindowSeconds"
+              type="number"
+              min={15}
+              max={1800}
+              step={5}
+              defaultValue={partner.offerWindowSeconds ?? ""}
+              placeholder="blank = use global defaults"
+              className="input w-32"
+            />
           </Field>
         </Section>
 

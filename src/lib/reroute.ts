@@ -202,7 +202,7 @@ async function rerouteOne(t: typeof transits.$inferSelect): Promise<RerouteOutco
           rerouteAttempts: [...(trace.rerouteAttempts ?? []), rerouteEntry],
         },
         // Push the deadline forward so we don't reroute again on the same tick.
-        acceptDeadline: acceptDeadlineFor(booking.bookingType),
+        acceptDeadline: acceptDeadlineFor(booking.bookingType, next.offerWindowSeconds),
         updatedAt: new Date(),
       })
       .where(eq(transits.id, t.id));

@@ -73,6 +73,20 @@ CREATE TABLE IF NOT EXISTS synthetic_test_runs (
 );
 CREATE INDEX IF NOT EXISTS synthetic_test_runs_ran_at_idx ON synthetic_test_runs (ran_at);
 
+-- ---------- Tier-1 #1: per-partner offer window ----------
+ALTER TABLE partners
+  ADD COLUMN IF NOT EXISTS offer_window_seconds integer;
+
+-- ---------- Tier-1 #2: webhook delivery retry tracking ----------
+ALTER TABLE webhook_deliveries
+  ADD COLUMN IF NOT EXISTS attempts        integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS next_attempt_at timestamp,
+  ADD COLUMN IF NOT EXISTS flagged_at      timestamp;
+
+CREATE INDEX IF NOT EXISTS webhook_deliveries_retry_queue_idx
+  ON webhook_deliveries (next_attempt_at)
+  WHERE next_attempt_at IS NOT NULL;
+
 -- ---------- P1-E5 query optimisation indexes ----------
 -- See docs/specs/P1-E5-query-optimisation.md for rationale.
 -- All idempotent; safe to re-run.
