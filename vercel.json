@@ -10,6 +10,10 @@
     {
       "path": "/api/cron/synthetic-test",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/retry-webhooks",
+      "schedule": "* * * * *"
     }
   ],
   "headers": [

@@ -35,6 +35,21 @@ import { createHash, createHmac } from "node:crypto";
 
 const OUTBOUND_TIMEOUT_MS = 5_000;
 
+/**
+ * Tier-1 #2: retry intervals after a delivery failure. Per BDD Story 1.3:
+ * "30 seconds, 2 minutes, 10 minutes". Index by current attempt count:
+ *   attempts=1 (initial failure) → wait RETRY_INTERVALS_MS[0]
+ *   attempts=2 (first retry failed) → wait RETRY_INTERVALS_MS[1]
+ *   attempts=3 (second retry failed) → wait RETRY_INTERVALS_MS[2]
+ *   attempts=4 (third retry failed) → flagged for admin, no further retries
+ */
+export const RETRY_INTERVALS_MS = [
+  30 * 1000,     // 30s after first failure
+  2 * 60 * 1000, // 2min after second
+  10 * 60 * 1000, // 10min after third
+];
+export const MAX_DELIVERY_ATTEMPTS = 4; // 1 initial + 3 retries
+
 export type OutboundEventPayload = {
   /** Stable id for this transit on the originator's side. */
   originatorBookingExternalId: string;
@@ -148,7 +163,9 @@ export async function sendOutboundEvent(
     clearTimeout(timeout);
   }
 
-  // Record the delivery — outcome 'delivered' if 2xx, otherwise 'delivery_failed'
+  // Record the delivery — outcome 'delivered' if 2xx, otherwise 'delivery_failed'.
+  // Tier-1 #2: when delivery fails on the first attempt, set nextAttemptAt
+  // so the retry cron picks it up in 30 seconds.
   try {
     await db.insert(webhookDeliveries).values({
       source: `outbound:${originatorPartnerId}`,
@@ -156,6 +173,10 @@ export async function sendOutboundEvent(
       payload: { envelope, target: originator.webhookUrl, eventType },
       outcome: delivered ? "delivered" : "delivery_failed",
       processedAt: new Date(),
+      attempts: 1,
+      ...(delivered
+        ? {}
+        : { nextAttemptAt: new Date(Date.now() + RETRY_INTERVALS_MS[0]) }),
     });
   } catch {
     // Don't let the delivery record failure mask a successful delivery.

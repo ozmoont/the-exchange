@@ -205,6 +205,21 @@ export default async function WebhooksPage({
                     </td>
                     <td className="px-5 py-3">
                       <OutcomeBadge outcome={r.outcome} />
+                      {/* Tier-1 #2: surface retry state for failed outbound */}
+                      {r.attempts > 1 && (
+                        <div className="text-[10px] text-ink-muted mt-1">
+                          {r.flaggedAt
+                            ? `⚠️ flagged · ${r.attempts} attempts`
+                            : r.outcome === "delivered"
+                            ? `recovered on attempt ${r.attempts}`
+                            : `${r.attempts} attempts so far`}
+                        </div>
+                      )}
+                      {r.nextAttemptAt && r.outcome === "delivery_failed" && (
+                        <div className="text-[10px] text-warning-fg mt-1">
+                          ↻ retry in {relativeFuture(r.nextAttemptAt)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-5 py-3 max-w-md">
                       <code className="text-xs text-ink-muted whitespace-pre-wrap break-words block">
@@ -226,6 +241,15 @@ export default async function WebhooksPage({
       </p>
     </div>
   );
+}
+
+function relativeFuture(d: Date | string): string {
+  const sec = Math.max(0, Math.floor((new Date(d).getTime() - Date.now()) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h`;
 }
 
 function buildHref(source: string | null, outcome: string | null): string {
