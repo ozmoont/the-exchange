@@ -10,7 +10,7 @@
 
 <!-- Anything a reviewer needs to know that isn't obvious from the diff. -->
 
-## QA (Miro) — must be fully ticked before merge
+## QA — must be fully ticked before merge
 
 - [ ] `docs/TEST_STRATEGY.md` updated with the new surface
 - [ ] Tests added under the correct path (`src/lib/__tests__/`, `src/components/**/__tests__/`, `src/app/api/__tests__/`)

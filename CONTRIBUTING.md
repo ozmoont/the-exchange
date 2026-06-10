@@ -54,7 +54,7 @@ Required reading before touching code, in order:
    spec.
 3. `docs/specs/` — per-feature acceptance criteria (Franko's lane).
 4. `docs/TEST_STRATEGY.md` — what's covered, where tests live, and what
-   layer to add new ones at (Miro's lane).
+   layer to add new ones at.
 5. `docs/RUNBOOK.md` — what to do when things break in prod.
 
 There are ~25 docs total — skim `docs/INTEGRATION_GUIDE.md` and
@@ -88,26 +88,25 @@ For anything bigger than a trivial fix:
    architectural decisions. PRs without a spec link must explain why.
 2. **Implement.** Match the spec. If reality forces a deviation,
    update the spec in the same PR.
-3. **Tests.** Add them at the layer Miro's `docs/TEST_STRATEGY.md`
-   prescribes (unit / component / api / smoke). Don't skip this.
+3. **Tests.** Add them at the layer `docs/TEST_STRATEGY.md` prescribes
+   (unit / component / api / smoke). Don't skip this.
 4. **Open the PR.** Fill in every section of the PR template. CI runs
    typecheck + vitest + docs-first.
 
 ### PR template
 
 The repo's `.github/pull_request_template.md` pre-fills a structured
-description with checklist sections for Miro (QA), Eamon (DevOps),
-Derek (Design), and Vicki (Copy). Tick what applies. If a section
-doesn't apply (e.g. no UI changes), say so explicitly in a comment —
-don't just leave it empty.
+description with checklist sections for QA, DevOps, Design, and Copy.
+Tick what applies. If a section doesn't apply (e.g. no UI changes),
+say so explicitly in a comment — don't just leave it empty.
 
 ### Reviews
 
 - **One required approval** before merge — from someone who didn't
   write the code.
-- **Miro reviews all feature PRs** for QA before merge. Add him as a
-  reviewer when you open. He'll tick his checklist and sign off, or
-  push back with regression concerns.
+- **QA reviews every feature PR** before merge. Add the designated
+  reviewer when you open. They'll tick the QA checklist and sign off,
+  or push back with regression concerns.
 - **Squash-merge** unless the branch genuinely has independently
   meaningful commits.
 
@@ -190,6 +189,6 @@ The script itself is `.github/scripts/docs-first-check.mjs`.
 
 - **Code unclear?** Open a GitHub Issue or DM in the project channel.
 - **Spec unclear?** Tag Franko on the spec doc.
-- **Test strategy unclear?** Tag Miro.
+- **Test strategy unclear?** Tag the QA reviewer on the PR.
 - **Prod incident?** `docs/RUNBOOK.md` first, then page OG.
 - **Doc out of date?** Fix it. Docs are part of the codebase.
