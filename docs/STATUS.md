@@ -191,7 +191,7 @@ These are tracked as GitHub Issues. The Issues tab is the queue.
 ## Team
 
 - **OG** — founder, commercial, product direction
-- **Miro** — QA + project management (this is you, welcome)
+- **Miro** — Contributor
 - **Frank** — counterpart on the iCabbi side, integration partner
 - Plus 5 persona subagent files (`/.claude/agents/`) that the team
   consults during reviews — Derek for design, Eamon for DevOps,
