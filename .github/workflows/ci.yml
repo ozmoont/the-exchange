@@ -20,7 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # pnpm 10+: pnpm-workspace.yaml is used as a settings-only file in
+          # this repo (no `packages` field). pnpm 9 hard-errors on that
+          # ("packages field missing or empty"), which broke every CI run
+          # since the file landed. Keep in sync with the Vitest job below.
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,7 +39,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # See note in the TypeScript job — pnpm 10 is required to parse the
+          # settings-only pnpm-workspace.yaml.
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
