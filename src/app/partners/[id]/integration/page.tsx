@@ -7,8 +7,19 @@ import { randomBytes } from "node:crypto";
 import Link from "next/link";
 import { clearAdapterCache } from "@/adapters/registry";
 import { encryptCredentials, decryptIfNeeded } from "@/lib/crypto";
-import { registerWebhookSubscription, deleteWebhookSubscription } from "@/adapters/icabbi";
+import { resetWebhookListeners, type WebhookListenerRecord } from "@/adapters/icabbi";
 import { requireSuperAdmin } from "@/lib/auth";
+
+/**
+ * Build the per-partner webhook callback URL with the shared-secret token
+ * appended as a query parameter. iCabbi cannot sign outbound webhooks,
+ * so the inbound route at /api/webhooks/ingest/[partnerId] authenticates
+ * by comparing this token (constant-time) against creds.webhookSecret.
+ * The secret is base64url (no /+= chars), already URL-safe.
+ */
+function buildCallbackUrl(appUrl: string, partnerId: string, token: string): string {
+  return `${appUrl}/api/webhooks/ingest/${partnerId}?token=${encodeURIComponent(token)}`;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +35,17 @@ type ICabbiCreds = {
   appKey?: string;
   secretKey?: string;
   webhookSecret?: string;
+  /**
+   * iCabbi listener provider ids per event, returned from
+   * /eventlisteners/create. Used to delete-then-create on re-register.
+   * See src/adapters/icabbi.ts → resetWebhookListeners.
+   */
+  webhookListeners?: WebhookListenerRecord[];
+  /**
+   * @deprecated legacy single-id field from the pre-eventlisteners
+   * scheme. Read only during disconnect cleanup of partners onboarded
+   * before the rewrite. Cleared on next reconnect.
+   */
   webhookSubscriptionId?: string;
   /**
    * Per-partner API base URL override. Required for sandbox tenants that
@@ -39,6 +61,18 @@ type ICabbiCreds = {
    */
   inboundBearerToken?: string;
 };
+
+/** Collect provider ids from both the new array shape and the legacy
+ * single-id field. Used by reset/disconnect to ensure we delete every
+ * listener iCabbi has on file even for partners mid-migration. */
+function collectExistingProviderIds(creds: ICabbiCreds): string[] {
+  const out: string[] = [];
+  for (const l of creds.webhookListeners ?? []) {
+    if (l.providerId) out.push(l.providerId);
+  }
+  if (creds.webhookSubscriptionId) out.push(creds.webhookSubscriptionId);
+  return out;
+}
 
 function readCreds(stored: unknown): ICabbiCreds {
   return (decryptIfNeeded(stored as Record<string, unknown> | null) ?? {}) as ICabbiCreds;
@@ -78,22 +112,17 @@ async function saveCredentialsAction(formData: FormData) {
     existingCreds.inboundBearerToken ?? randomBytes(48).toString("base64url");
 
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-  const webhookUrl = `${appUrl}/api/webhooks/ingest/${id}`;
-  const registration = await registerWebhookSubscription({
+  // Token-in-URL auth — iCabbi can't sign HMAC, so the shared secret
+  // travels on the query string. The inbound route compares it in
+  // constant time against creds.webhookSecret.
+  const callbackUrl = buildCallbackUrl(appUrl, id, webhookSecret);
+  const registration = await resetWebhookListeners({
     appKey,
     secretKey,
-    url: webhookUrl,
-    sharedSecret: webhookSecret,
+    callbackUrl,
+    existingProviderIds: collectExistingProviderIds(existingCreds),
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
   });
-
-  if (registration.ok && existingCreds.webhookSubscriptionId && existingCreds.appKey === appKey) {
-    await deleteWebhookSubscription({
-      appKey,
-      secretKey,
-      subscriptionId: existingCreds.webhookSubscriptionId,
-    });
-  }
 
   const credentials: ICabbiCreds = {
     appKey,
@@ -101,7 +130,15 @@ async function saveCredentialsAction(formData: FormData) {
     webhookSecret,
     inboundBearerToken,
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
-    ...(registration.ok ? { webhookSubscriptionId: registration.subscriptionId } : {}),
+    // Always persist listeners we actually created — even if SOME failed.
+    // The errors[] array lets the UI nudge the operator to retry.
+    ...(registration.created.length > 0
+      ? { webhookListeners: registration.created }
+      : {}),
+    // Clear legacy single-id once we've successfully migrated this partner
+    // to the array shape. Until then it stays put so a future reset still
+    // tries to delete the pre-migration listener.
+    ...(registration.created.length > 0 ? { webhookSubscriptionId: undefined } : {}),
   };
 
   await db
@@ -115,9 +152,10 @@ async function saveCredentialsAction(formData: FormData) {
 
   clearAdapterCache(id);
 
-  if (!registration.ok) {
+  if (registration.errors.length > 0) {
     console.warn(
-      `[integration] Webhook auto-registration failed for partner ${id}: status=${registration.status} ${registration.message}`,
+      `[integration] Webhook listener reset for partner ${id} had ${registration.errors.length} errors:`,
+      registration.errors,
     );
   }
 
@@ -133,7 +171,9 @@ async function saveCredentialsAction(formData: FormData) {
       appKey: existingCreds.appKey ?? null,
       hasSecretKey: !!existingCreds.secretKey,
       hasWebhookSecret: !!existingCreds.webhookSecret,
-      hadSubscription: !!existingCreds.webhookSubscriptionId,
+      previousListenerCount:
+        (existingCreds.webhookListeners?.length ?? 0) +
+        (existingCreds.webhookSubscriptionId ? 1 : 0),
     },
     after: {
       adapterKey: "icabbi",
@@ -141,8 +181,9 @@ async function saveCredentialsAction(formData: FormData) {
       hasSecretKey: true,
       hasWebhookSecret: true,
       webhookSecretRotated: false,
-      webhookRegistered: registration.ok,
-      webhookRegistrationError: registration.ok ? null : `${registration.status}: ${registration.message}`,
+      listenersDeleted: registration.deleted,
+      listenersCreated: registration.created.length,
+      registrationErrors: registration.errors.length > 0 ? registration.errors : null,
     },
   });
 
@@ -156,8 +197,10 @@ async function saveCredentialsAction(formData: FormData) {
     qs.set("webhookSecret", webhookSecret);
     qs.set("inboundBearerToken", inboundBearerToken);
   }
-  if (registration.ok) qs.set("subscriptionId", registration.subscriptionId);
-  else qs.set("registrationError", `${registration.status}`);
+  qs.set("listenersCreated", String(registration.created.length));
+  if (registration.errors.length > 0) {
+    qs.set("registrationErrors", String(registration.errors.length));
+  }
 
   redirect(`/partners/${id}/integration?${qs.toString()}`);
 }
@@ -177,29 +220,27 @@ async function rotateWebhookSecretAction(formData: FormData) {
   const newInboundBearerToken = randomBytes(48).toString("base64url");
 
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-  const webhookUrl = `${appUrl}/api/webhooks/ingest/${id}`;
-  let newSubscriptionId = creds.webhookSubscriptionId;
+  // Rotating the webhook secret means the callback URL's `?token=`
+  // parameter changes — every listener has to be deleted + recreated
+  // with the new token, otherwise inbound auth fails on the very next
+  // event. resetWebhookListeners handles that atomically.
+  let newListeners: WebhookListenerRecord[] | undefined = creds.webhookListeners;
+  let registrationErrors: string[] = [];
   if (creds.appKey && creds.secretKey) {
-    const reg = await registerWebhookSubscription({
+    const callbackUrl = buildCallbackUrl(appUrl, id, newWebhookSecret);
+    const reg = await resetWebhookListeners({
       appKey: creds.appKey,
       secretKey: creds.secretKey,
-      url: webhookUrl,
-      sharedSecret: newWebhookSecret,
+      callbackUrl,
+      existingProviderIds: collectExistingProviderIds(creds),
       ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
     });
-    if (reg.ok) {
-      newSubscriptionId = reg.subscriptionId;
-      if (creds.webhookSubscriptionId) {
-        await deleteWebhookSubscription({
-          appKey: creds.appKey,
-          secretKey: creds.secretKey,
-          subscriptionId: creds.webhookSubscriptionId,
-          ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
-        });
-      }
-    } else {
+    if (reg.created.length > 0) newListeners = reg.created;
+    registrationErrors = reg.errors;
+    if (reg.errors.length > 0) {
       console.warn(
-        `[integration] Webhook re-registration failed on rotate for ${id}: ${reg.status} ${reg.message}`,
+        `[integration] Webhook listener reset on rotate for ${id} had ${reg.errors.length} errors:`,
+        reg.errors,
       );
     }
   }
@@ -208,7 +249,9 @@ async function rotateWebhookSecretAction(formData: FormData) {
     ...creds,
     webhookSecret: newWebhookSecret,
     inboundBearerToken: newInboundBearerToken,
-    webhookSubscriptionId: newSubscriptionId,
+    ...(newListeners ? { webhookListeners: newListeners } : {}),
+    // Legacy field gets cleared on the first successful rotate.
+    webhookSubscriptionId: undefined,
   };
 
   await db
@@ -229,15 +272,24 @@ async function rotateWebhookSecretAction(formData: FormData) {
     subjectType: "partner",
     subjectId: id,
     before: { hasWebhookSecret: !!creds.webhookSecret },
-    after: { hasWebhookSecret: true, webhookSecretRotated: true },
+    after: {
+      hasWebhookSecret: true,
+      webhookSecretRotated: true,
+      listenersCreated: newListeners?.length ?? 0,
+      registrationErrors: registrationErrors.length > 0 ? registrationErrors : null,
+    },
   });
 
   revalidatePath(`/partners/${id}/integration`);
   revalidatePath("/audit");
 
-  redirect(
-    `/partners/${id}/integration?rotated=1&webhookSecret=${newWebhookSecret}&inboundBearerToken=${newInboundBearerToken}`,
-  );
+  const qs = new URLSearchParams();
+  qs.set("rotated", "1");
+  qs.set("webhookSecret", newWebhookSecret);
+  qs.set("inboundBearerToken", newInboundBearerToken);
+  qs.set("listenersCreated", String(newListeners?.length ?? 0));
+  if (registrationErrors.length > 0) qs.set("registrationErrors", String(registrationErrors.length));
+  redirect(`/partners/${id}/integration?${qs.toString()}`);
 }
 
 async function disconnectAction(formData: FormData) {
@@ -249,16 +301,23 @@ async function disconnectAction(formData: FormData) {
   if (!partner) return;
 
   const creds = readCreds(partner.credentials);
-  if (creds.webhookSubscriptionId && creds.appKey && creds.secretKey) {
-    const del = await deleteWebhookSubscription({
+  const existingIds = collectExistingProviderIds(creds);
+  if (existingIds.length > 0 && creds.appKey && creds.secretKey) {
+    // Use resetWebhookListeners with empty events to delete-only.
+    // Best-effort: errors logged but disconnect still proceeds — we'd
+    // rather leave orphan listeners on iCabbi than block teardown.
+    const del = await resetWebhookListeners({
       appKey: creds.appKey,
       secretKey: creds.secretKey,
-      subscriptionId: creds.webhookSubscriptionId,
+      callbackUrl: "", // unused when events is empty
+      existingProviderIds: existingIds,
+      events: [], // delete-only
       ...(creds.apiBaseUrl ? { apiBaseUrl: creds.apiBaseUrl } : {}),
     });
-    if (!del.ok) {
+    if (del.errors.length > 0) {
       console.warn(
-        `[integration] Webhook deregistration failed for ${id}: ${del.status} ${del.message ?? ""}`,
+        `[integration] Listener deregistration partial-failure for ${id}: ${del.errors.length} errors`,
+        del.errors,
       );
     }
   }
@@ -302,8 +361,8 @@ export default async function IntegrationPage({
     error?: string;
     webhookSecret?: string;
     inboundBearerToken?: string;
-    subscriptionId?: string;
-    registrationError?: string;
+    listenersCreated?: string;
+    registrationErrors?: string;
   }>;
 }) {
   await requireSuperAdmin();
@@ -318,6 +377,12 @@ export default async function IntegrationPage({
   const icabbiBase = process.env.ICABBI_API_BASE_URL ?? "https://api.icabbi.com/v2";
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const webhookUrl = `${appUrl}/api/webhooks/ingest/${partner.id}`;
+  // The URL we'd register with iCabbi includes ?token=<webhookSecret>.
+  // We can't reveal the actual secret post-creation, so show a tokenised
+  // form when we have it (after a fresh save) and a placeholder otherwise.
+  const webhookUrlWithToken = sp.webhookSecret
+    ? `${webhookUrl}?token=${sp.webhookSecret}`
+    : `${webhookUrl}?token=<webhook-secret>`;
   const inboundBookingsUrl = `${appUrl}/api/icabbi/bookings`;
   const inboundCancellationsUrl = `${appUrl}/api/icabbi/cancellations`;
 
@@ -398,17 +463,15 @@ export default async function IntegrationPage({
       {sp.error === "incomplete" && (
         <Banner tone="error">App-Key and Secret-Key are both required to connect.</Banner>
       )}
-      {sp.subscriptionId && (
+      {sp.listenersCreated && Number(sp.listenersCreated) > 0 && (
         <Banner tone="success">
-          Webhook subscription auto-registered with iCabbi (subscription id{" "}
-          <code>{sp.subscriptionId}</code>).
+          {sp.listenersCreated} webhook listener{Number(sp.listenersCreated) === 1 ? "" : "s"} auto-registered with iCabbi.
         </Banner>
       )}
-      {sp.registrationError && (
+      {sp.registrationErrors && Number(sp.registrationErrors) > 0 && (
         <Banner tone="warning">
-          Credentials saved, but webhook auto-registration with iCabbi failed (status{" "}
-          {sp.registrationError}). Register manually by giving iCabbi the webhook URL and signing
-          secret below.
+          {sp.registrationErrors} listener registration{Number(sp.registrationErrors) === 1 ? "" : "s"} failed.
+          Check the server logs and click <strong>Save credentials</strong> again to retry the failed events.
         </Banner>
       )}
 
@@ -529,9 +592,11 @@ export default async function IntegrationPage({
               signed with the secret shown when you connected (or after rotation).
             </p>
 
-            {creds.webhookSubscriptionId ? (
+            {(creds.webhookListeners && creds.webhookListeners.length > 0) || creds.webhookSubscriptionId ? (
               <Banner tone="success">
-                Auto-registered with iCabbi · subscription <code>{creds.webhookSubscriptionId}</code>
+                Auto-registered with iCabbi · {creds.webhookListeners?.length ?? 0} listener
+                {(creds.webhookListeners?.length ?? 0) === 1 ? "" : "s"} active
+                {creds.webhookSubscriptionId ? " (+ legacy single-subscription on file, will migrate on next rotate)" : ""}
               </Banner>
             ) : (
               <Banner tone="warning">
@@ -539,10 +604,15 @@ export default async function IntegrationPage({
               </Banner>
             )}
 
-            <Field label="Inbound webhook URL (give this to iCabbi)">
-              <input value={webhookUrl} readOnly className="input font-mono" />
+            <Field label="Inbound webhook URL (auto-registered with iCabbi on Connect)">
+              <input value={webhookUrlWithToken} readOnly className="input font-mono" />
+              <p className="text-xs text-ink-muted mt-1.5">
+                iCabbi cannot sign outbound webhooks. The shared secret travels on the URL as
+                <code>?token=…</code>; the inbound route compares it in constant time against the
+                stored webhook secret.
+              </p>
             </Field>
-            <Field label="Webhook signing secret">
+            <Field label="Webhook secret">
               <input
                 value={creds.webhookSecret ? "•".repeat(32) + " (saved, only shown once)" : "not generated"}
                 readOnly
@@ -554,7 +624,8 @@ export default async function IntegrationPage({
               <input type="hidden" name="id" value={partner.id} />
               <button type="submit" className="btn-danger">Rotate webhook secret</button>
               <span className="text-xs text-ink-muted">
-                Generates a new secret immediately. iCabbi&apos;s side must be updated to match.
+                Generates a new secret + tears down all 13 listeners on iCabbi and re-registers
+                them with the new token. Atomic from your perspective.
               </span>
             </form>
           </Section>

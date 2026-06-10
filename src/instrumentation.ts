@@ -43,13 +43,9 @@ export async function register() {
   // typecheck doesn't require the package to be installed in dev sandboxes
   // (a missing module here logs a warning rather than crashing boot).
   try {
-    // Module path typed loose so typecheck doesn't require @sentry/nextjs
-    // to be installed in dev sandboxes. Production deploy has it via
-    // package.json — Sentry's actual types resolve at runtime.
-    //
-    // @ts-expect-error — @sentry/nextjs is a runtime dep declared in
-    // package.json; types resolve at runtime. The catch handles the case
-    // where the package isn't installed in a dev sandbox.
+    // Dynamic import keeps @sentry/nextjs out of the edge bundle. The
+    // catch keeps boot resilient if a future env loses the package — we'd
+    // rather degrade to no-Sentry than crash the server.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sentryModule: any = await import("@sentry/nextjs").catch(() => null);
     if (!sentryModule) {

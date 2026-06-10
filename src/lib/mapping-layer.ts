@@ -27,11 +27,30 @@ import { log } from "@/lib/logger";
 export type MappingConfig = {
   fields: Record<string, FieldMapping>;
   endpoints?: {
-    create_booking?: string;
-    quote?: string;
-    cancel?: string;
+    create_booking?: EndpointSpec;
+    quote?: EndpointSpec;
+    cancel?: EndpointSpec;
+    get_booking?: EndpointSpec;
+    update_booking?: EndpointSpec;
   };
 };
+
+/**
+ * Endpoint spec — either a plain URL string (assumed POST, no templating)
+ * or an object with explicit method + URL template. The URL can contain
+ * `{external_id}` which is substituted at call time with the recipient
+ * booking's external id (the value the partner returned when we created
+ * the booking).
+ *
+ * CMAC's cancel is `DELETE /Jobs/{id}`, get is `GET /Jobs/{id}` — both
+ * need the object shape. FreeNow's POST /bookings is fine as a string.
+ */
+export type EndpointSpec =
+  | string
+  | {
+      url: string;
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+    };
 
 export type FieldMapping = {
   /** The field name the partner uses on the wire. */
@@ -39,31 +58,58 @@ export type FieldMapping = {
   /** When true, applyMapping fails if the canonical value is missing. */
   required?: boolean;
   /**
-   * Numeric transformation applied EMITTING (canonical → partner).
-   *   divide   — partnerValue = canonicalValue / N (e.g. minutes → seconds via multiply)
-   *   multiply — partnerValue = canonicalValue * N (e.g. £ → pence via multiply: 100)
-   * Reverse direction is the inverse.
+   * Transformation applied EMITTING (canonical → partner). Three families:
    *
-   * For unit conversions: think in terms of how the partner expects the
-   * value. If the partner wants eta_seconds and we have eta_minutes,
-   * use multiply: 60.
+   *   divide          — partnerValue = canonicalValue / N. e.g. seconds →
+   *                     minutes via divide: 60.
+   *   multiply        — partnerValue = canonicalValue * N. e.g. minutes →
+   *                     seconds via multiply: 60. £ → pence via multiply: 100.
+   *   format_datetime — convert an ISO 8601 timestamp into the partner's
+   *                     wire-shaped date string. CMAC wants "yyyy-MM-dd HH:mm"
+   *                     in LOCAL time with NO timezone marker; other partners
+   *                     may want similar. Specify `tz` (an IANA timezone) and
+   *                     `format` (one of the supported tokens below).
+   *
+   *                     Supported format tokens (we don't pull in date-fns;
+   *                     keep the engine dep-free):
+   *                       "yyyy-MM-dd HH:mm"   "yyyy-MM-dd HH:mm:ss"
+   *                       "yyyy-MM-ddTHH:mm"   "yyyy-MM-ddTHH:mm:ss"
+   *                       "dd/MM/yyyy HH:mm"
+   *
+   * Reverse direction:
+   *   - divide/multiply are inverted on receive.
+   *   - format_datetime is RECEIVE-NO-OP — partners send dates back in many
+   *     shapes (ISO, epoch, partner-local strings); reverse mapping just
+   *     passes the value through. Callers that need parsing handle it.
    */
-  transform?: { type: "divide" | "multiply"; value: number };
+  transform?:
+    | { type: "divide"; value: number }
+    | { type: "multiply"; value: number }
+    | { type: "format_datetime"; format: string; tz?: string };
   /**
    * Forward value lookup: canonical enum → partner enum.
    * Emitted: lookup the canonical value as a key, use the partner value.
    * Received: reverse lookup — find the canonical value where the
    * partner value matches.
-   * Example: { saloon: "ECO", exec: "BUSINESS" } for vehicle_type.
+   *
+   * Values can be string | number | boolean — some partners use numeric
+   * enums (e.g. CMAC: { "saloon": 1, "exec": 6, "mpv": 5, "wav": 14 }).
+   * Keys are always strings (JS object key constraint); the engine
+   * stringifies canonical values before lookup so numeric canonical
+   * values still work.
    */
-  value_lookup?: Record<string, string>;
+  value_lookup?: Record<string, string | number | boolean>;
   /**
    * Receive-only value lookup: partner enum → canonical enum. Used when
    * the canonical value flows FROM the partner only (e.g. booking.status
    * comes back from the partner; we don't tell them their status).
-   * Example: { ACCEPTED: "Accepted", IN_PROGRESS: "Passenger On Board" }.
+   *
+   * Same string|number|boolean value tolerance. CMAC example:
+   *   { "1": "received", "2": "accepted", "9": "driver_assigned", ... }
+   * Keys here represent the PARTNER value; the engine stringifies the
+   * incoming partner value before lookup.
    */
-  value_lookup_reverse?: Record<string, string>;
+  value_lookup_reverse?: Record<string, string | number | boolean>;
 };
 
 export type ApplyMappingSuccess = {
@@ -120,27 +166,48 @@ export function applyMapping(
 
     let transformed: unknown = value;
 
-    // 1. Apply value_lookup if present and the value is a string we can
-    //    look up. Unknown values pass through unchanged + warning.
-    if (mapping.value_lookup && typeof value === "string") {
-      const mapped = mapping.value_lookup[value];
+    // 1. Apply value_lookup if present. Canonical value is stringified
+    //    for the key lookup so numeric canonical values work (rare, but
+    //    happens when canonical fields are themselves enums-as-numbers).
+    //    Emitted value is whatever the config supplies (string, number,
+    //    boolean) — partners expecting numeric IDs get them as numbers.
+    //    Unknown values pass through unchanged + warning.
+    if (mapping.value_lookup && (typeof value === "string" || typeof value === "number" || typeof value === "boolean")) {
+      const key = String(value);
+      const mapped = mapping.value_lookup[key];
       if (mapped === undefined) {
         warnings.push(
-          `value_lookup miss for "${canonicalPath}": canonical value "${value}" not in lookup table; passing through unchanged`,
+          `value_lookup miss for "${canonicalPath}": canonical value "${key}" not in lookup table; passing through unchanged`,
         );
       } else {
         transformed = mapped;
       }
     }
 
-    // 2. Apply numeric transformation. Per spec: divide/multiply are
-    //    applied EMITTING; reverse is the inverse on receive.
-    if (mapping.transform && typeof transformed === "number") {
-      transformed = applyTransform(transformed, mapping.transform, "emit");
-    } else if (mapping.transform) {
-      warnings.push(
-        `transform "${mapping.transform.type}" on "${canonicalPath}" expects a number; got ${typeof transformed}; skipping transform`,
-      );
+    // 2. Apply transformation.
+    //    divide/multiply: numeric, applied EMITTING; inverse on receive.
+    //    format_datetime: string → string, EMIT only (receive is no-op).
+    if (mapping.transform) {
+      if (mapping.transform.type === "format_datetime") {
+        try {
+          transformed = formatDateTime(
+            transformed,
+            mapping.transform.format,
+            mapping.transform.tz,
+          );
+        } catch (err) {
+          warnings.push(
+            `format_datetime transform on "${canonicalPath}" failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          // Fall through with untransformed value — caller may still want it.
+        }
+      } else if (typeof transformed === "number") {
+        transformed = applyTransform(transformed, mapping.transform, "emit");
+      } else {
+        warnings.push(
+          `transform "${mapping.transform.type}" on "${canonicalPath}" expects a number; got ${typeof transformed}; skipping transform`,
+        );
+      }
     }
 
     setByPath(payload, mapping.partner_field, transformed);
@@ -172,8 +239,14 @@ export function reverseMapping(
 
     let recovered: unknown = partnerValue;
 
-    // 1. Reverse numeric transformation
-    if (mapping.transform && typeof recovered === "number") {
+    // 1. Reverse transformation.
+    //    divide/multiply: inverted on receive.
+    //    format_datetime: receive is a pass-through — partners send dates
+    //    back in many shapes (ISO, epoch, partner-local strings); leave the
+    //    raw value for callers to parse.
+    if (mapping.transform && mapping.transform.type === "format_datetime") {
+      // no-op
+    } else if (mapping.transform && typeof recovered === "number") {
       recovered = applyTransform(recovered, mapping.transform, "receive");
     } else if (mapping.transform) {
       warnings.push(
@@ -186,21 +259,26 @@ export function reverseMapping(
     //        find the canonical key whose partner-value matches recovered.
     //    (b) value_lookup_reverse is a receive-only map (partner → canonical).
     //        Apply directly.
-    if (mapping.value_lookup_reverse && typeof recovered === "string") {
-      const mapped = mapping.value_lookup_reverse[recovered];
+    // Partner value is stringified for the key lookup so numeric IDs
+    // (e.g. CMAC status=1) match the config keys cleanly.
+    const isLookupable = typeof recovered === "string" || typeof recovered === "number" || typeof recovered === "boolean";
+    if (mapping.value_lookup_reverse && isLookupable) {
+      const key = String(recovered);
+      const mapped = mapping.value_lookup_reverse[key];
       if (mapped === undefined) {
         warnings.push(
-          `value_lookup_reverse miss on "${canonicalPath}": partner value "${recovered}" not in reverse table`,
+          `value_lookup_reverse miss on "${canonicalPath}": partner value "${key}" not in reverse table`,
         );
       } else {
         recovered = mapped;
       }
-    } else if (mapping.value_lookup && typeof recovered === "string") {
+    } else if (mapping.value_lookup && isLookupable) {
       const inverse = invertLookup(mapping.value_lookup);
-      const mapped = inverse[recovered];
+      const key = String(recovered);
+      const mapped = inverse[key];
       if (mapped === undefined) {
         warnings.push(
-          `value_lookup inverse miss on "${canonicalPath}": partner value "${recovered}" not in forward table`,
+          `value_lookup inverse miss on "${canonicalPath}": partner value "${key}" not in forward table`,
         );
       } else {
         recovered = mapped;
@@ -216,6 +294,56 @@ export function reverseMapping(
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/**
+ * Format a date/time value into the partner's expected wire shape.
+ *
+ * Accepts a string (parsed as ISO) or a Date. Renders in the supplied IANA
+ * timezone (default UTC) using a small whitelist of format tokens — no
+ * date-fns dependency. Throws on unparseable input or unknown format.
+ */
+function formatDateTime(value: unknown, format: string, tz?: string): string {
+  if (value == null) throw new Error("value is null/undefined");
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`cannot parse "${String(value)}" as a date`);
+  }
+  // Use Intl.DateTimeFormat for TZ-aware part extraction. en-GB gives us
+  // 24h format and dd/MM/yyyy ordering, which we then re-assemble per the
+  // requested format token.
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz ?? "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const p: Record<string, string> = {};
+  for (const part of parts) p[part.type] = part.value;
+  // Intl returns "24" for midnight in en-GB; remap to "00" for SQL-friendly
+  // output. This bites on Europe/London right at midnight if not fixed.
+  if (p.hour === "24") p.hour = "00";
+
+  switch (format) {
+    case "yyyy-MM-dd HH:mm":
+      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+    case "yyyy-MM-dd HH:mm:ss":
+      return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+    case "yyyy-MM-ddTHH:mm":
+      return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+    case "yyyy-MM-ddTHH:mm:ss":
+      return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`;
+    case "dd/MM/yyyy HH:mm":
+      return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}`;
+    default:
+      throw new Error(
+        `unknown format "${format}" — supported: "yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHH:mm:ss", "dd/MM/yyyy HH:mm"`,
+      );
+  }
+}
 
 function applyTransform(
   value: number,
@@ -237,18 +365,44 @@ function applyTransform(
   return effective === "divide" ? value / transform.value : value * transform.value;
 }
 
-function invertLookup(forward: Record<string, string>): Record<string, string> {
+function invertLookup(
+  forward: Record<string, string | number | boolean>,
+): Record<string, string> {
   const inv: Record<string, string> = {};
   for (const [k, v] of Object.entries(forward)) {
-    if (inv[v] !== undefined) {
+    const vKey = String(v);
+    if (inv[vKey] !== undefined) {
       // Two canonical values map to the same partner value — inversion
       // ambiguous. Keep the first (deterministic). Caller can use
       // value_lookup_reverse instead if disambiguation is needed.
       continue;
     }
-    inv[v] = k;
+    inv[vKey] = k;
   }
   return inv;
+}
+
+/**
+ * Resolve an EndpointSpec to { url, method }. The url has `{external_id}`
+ * substituted with the supplied id if present in the template.
+ */
+export function resolveEndpoint(
+  spec: EndpointSpec | undefined,
+  externalId?: string,
+): { url: string; method: string } | null {
+  if (!spec) return null;
+  if (typeof spec === "string") {
+    return { url: substituteId(spec, externalId), method: "POST" };
+  }
+  return {
+    url: substituteId(spec.url, externalId),
+    method: spec.method ?? "POST",
+  };
+}
+
+function substituteId(url: string, externalId?: string): string {
+  if (externalId === undefined) return url;
+  return url.replace(/\{external_id\}/g, encodeURIComponent(externalId));
 }
 
 /**
@@ -334,10 +488,10 @@ function normaliseConfig(raw: Record<string, unknown>): MappingConfig | null {
         ? { transform: m.transform as FieldMapping["transform"] }
         : {}),
       ...(m.value_lookup && typeof m.value_lookup === "object"
-        ? { value_lookup: m.value_lookup as Record<string, string> }
+        ? { value_lookup: m.value_lookup as Record<string, string | number | boolean> }
         : {}),
       ...(m.value_lookup_reverse && typeof m.value_lookup_reverse === "object"
-        ? { value_lookup_reverse: m.value_lookup_reverse as Record<string, string> }
+        ? { value_lookup_reverse: m.value_lookup_reverse as Record<string, string | number | boolean> }
         : {}),
     };
   }

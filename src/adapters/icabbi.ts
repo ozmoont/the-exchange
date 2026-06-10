@@ -76,58 +76,161 @@ export type ICabbiCredentials = {
    */
   apiBaseUrl?: string;
   /**
-   * If we successfully auto-registered our webhook URL with iCabbi at
-   * connect time, this holds the subscription_id they returned. Used to
-   * DELETE the subscription on disconnect.
+   * iCabbi listener ids returned from /eventlisteners/create — one per
+   * subscribed event. Persisted so we can delete them on disconnect or
+   * re-register (delete-all-then-create-all pattern in
+   * resetWebhookListeners). iCabbi's list endpoint returns 401 for our
+   * key, so we cannot reconcile from source.
+   */
+  webhookListeners?: WebhookListenerRecord[];
+  /**
+   * @deprecated legacy single-id field from the pre-eventlisteners
+   * registration scheme. Read-only — only consulted during disconnect
+   * cleanup for partners onboarded before the rewrite, and cleared
+   * once they reconnect under the new shape.
    */
   webhookSubscriptionId?: string;
 };
 
 /**
- * Standalone helpers (no class instance needed) so the admin credential
- * save action can call them right after writing credentials, without
- * having to construct an adapter.
+ * iCabbi webhook subscription helpers — standalone (no class instance
+ * needed) so the integration page can call them right after writing
+ * credentials.
+ *
+ * The real iCabbi protocol (confirmed against staging):
+ *   - POST {base}/eventlisteners/create — one per event, body
+ *     { name, event, url, format: "json", template: "#json" }.
+ *     Response: { eventlistener: { id: number, ... } }
+ *   - POST {base}/eventlisteners/delete/{id}
+ *
+ * iCabbi cannot sign outbound webhooks. The shared-secret goes in the
+ * URL as `?token=<secret>` instead — the inbound route at
+ * /api/webhooks/ingest/[partnerId] handles that path. See task #238.
+ *
+ * We can't read iCabbi's list endpoint (401 for our key), so listener
+ * ids must be persisted on our side. `resetWebhookListeners` returns
+ * the full array of created listeners which the caller writes back to
+ * partners.credentials.webhookListeners.
  */
 
-export type RegisterWebhookArgs = {
-  appKey: string;
-  secretKey: string;
-  url: string;
-  sharedSecret: string;
-  topics?: string[];
-  /** Per-partner API base URL override; see ICabbiCredentials.apiBaseUrl. */
-  apiBaseUrl?: string;
+import {
+  ICABBI_WEBHOOK_EVENTS,
+  buildListenerName,
+  type IcabbiWebhookEvent,
+} from "@/lib/icabbi-webhook-events";
+
+export type WebhookListenerRecord = {
+  /** iCabbi's eventlistener.id — what we POST to /eventlisteners/delete/{id}. */
+  providerId: string;
+  /** Which canonical event this listener fires on (`booking:completed`, …). */
+  event: IcabbiWebhookEvent;
+  /** Name we registered, useful for surfacing in the iCabbi admin console. */
+  name: string;
 };
 
-export type RegisterWebhookResult =
-  | { ok: true; subscriptionId: string }
-  | { ok: false; status: number; message: string };
+export type ResetWebhookListenersArgs = {
+  appKey: string;
+  secretKey: string;
+  /** Callback URL including the ?token=<secret> shared secret. */
+  callbackUrl: string;
+  /** Previously-registered listener provider ids — these get deleted first. */
+  existingProviderIds: string[];
+  /** Per-partner API base URL override; see ICabbiCredentials.apiBaseUrl. */
+  apiBaseUrl?: string;
+  /** Optional override — defaults to ICABBI_WEBHOOK_EVENTS (all 13). */
+  events?: readonly IcabbiWebhookEvent[];
+};
 
-const DEFAULT_TOPICS = ["TripStatus", "DriverDetails", "FinalFareReleased"] as const;
+export type ResetWebhookListenersResult = {
+  deleted: number;
+  created: WebhookListenerRecord[];
+  errors: string[];
+};
 
-// 8s is generous for a single REST POST but short enough that the
-// integration page Connect button doesn't appear hung for a full minute
-// while Vercel's function eventually times out. iCabbi staging health
-// can be slow during off-peak. If we're still timing out at 8s the
-// endpoint is probably wrong, not just slow.
-const WEBHOOK_TIMEOUT_MS = 8000;
+// 10s per call — iCabbi staging can be slow off-peak. If we're still
+// timing out the endpoint is probably misconfigured, not just under
+// load. 13 events × 10s sequentially = ~130s worst case; we run them
+// concurrently below to keep the user-facing reset action snappy.
+const WEBHOOK_TIMEOUT_MS = 10_000;
 
-export async function registerWebhookSubscription(
-  args: RegisterWebhookArgs,
-): Promise<RegisterWebhookResult> {
+/**
+ * Tear down all existing listeners on iCabbi, then register one
+ * listener per event. Best-effort delete (errors collected, not
+ * thrown). Hard create — if ANY create fails the result still includes
+ * the successful ones so the caller can persist them; the caller is
+ * expected to surface `errors` in the UI so an operator can retry.
+ */
+export async function resetWebhookListeners(
+  args: ResetWebhookListenersArgs,
+): Promise<ResetWebhookListenersResult> {
   const base = resolveBaseUrl(args.apiBaseUrl);
-  const body = {
-    url: args.url,
-    shared_secret: args.sharedSecret,
-    topics: args.topics ?? DEFAULT_TOPICS,
-  };
+  const events = args.events ?? ICABBI_WEBHOOK_EVENTS;
+  const errors: string[] = [];
 
+  // ----- delete phase ----------------------------------------------------
+  // Best-effort: log each failure but keep going. We DON'T want a single
+  // 404 (listener already gone) to block re-creation.
+  let deleted = 0;
+  await Promise.all(
+    args.existingProviderIds.map(async (id) => {
+      const result = await deleteListener(base, args.appKey, args.secretKey, id);
+      if (result.ok) deleted += 1;
+      else errors.push(`delete ${id}: ${result.status} ${result.message ?? ""}`.trim());
+    }),
+  );
+
+  // ----- create phase ----------------------------------------------------
+  // Run in parallel — iCabbi accepts concurrent registrations, and 13
+  // serial calls would make Connect feel laggy.
+  const created: WebhookListenerRecord[] = [];
+  await Promise.all(
+    events.map(async (event) => {
+      const result = await createListener(
+        base,
+        args.appKey,
+        args.secretKey,
+        event,
+        args.callbackUrl,
+      );
+      if (result.ok) {
+        created.push({
+          providerId: result.providerId,
+          event,
+          name: result.name,
+        });
+      } else {
+        errors.push(`create ${event}: ${result.status} ${result.message ?? ""}`.trim());
+      }
+    }),
+  );
+
+  return { deleted, created, errors };
+}
+
+async function createListener(
+  base: string,
+  appKey: string,
+  secretKey: string,
+  event: IcabbiWebhookEvent,
+  url: string,
+): Promise<
+  | { ok: true; providerId: string; name: string }
+  | { ok: false; status: number; message: string }
+> {
+  const name = buildListenerName(event);
+  const body = {
+    name,
+    event,
+    url,
+    format: "json",
+    template: "#json",
+  };
   try {
-    const res = await fetch(`${base}/webhooks/register`, {
+    const res = await fetch(`${base}/eventlisteners/create`, {
       method: "POST",
       headers: {
-        "App-Key": args.appKey,
-        "Secret-Key": args.secretKey,
+        "App-Key": appKey,
+        "Secret-Key": secretKey,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -138,66 +241,119 @@ export async function registerWebhookSubscription(
     if (!res.ok) {
       return { ok: false, status: res.status, message: text.slice(0, 300) };
     }
-    let json: unknown = null;
+    let parsed: unknown = null;
     try {
-      json = text ? JSON.parse(text) : null;
+      parsed = text ? JSON.parse(text) : null;
     } catch {
-      // ignore
+      // fall through — parsed stays null, treated as missing id below
     }
-    const envelope = json as { body?: { subscription_id?: string; id?: string } } | null;
-    const subId =
-      envelope?.body?.subscription_id ??
-      envelope?.body?.id ??
-      (json as { subscription_id?: string } | null)?.subscription_id ??
-      "";
-    if (!subId) {
-      return { ok: false, status: 200, message: `no subscription id in response: ${text.slice(0, 200)}` };
+    // iCabbi's response envelope: { eventlistener: { id, ... } }. Some
+    // clusters return the listener at the top level — accept both shapes
+    // so we don't get tripped up by a future API revision.
+    const env = parsed as {
+      eventlistener?: { id?: string | number };
+      id?: string | number;
+    } | null;
+    const providerId = env?.eventlistener?.id ?? env?.id;
+    if (providerId == null) {
+      return {
+        ok: false,
+        status: 200,
+        message: `no eventlistener.id in response: ${text.slice(0, 200)}`,
+      };
     }
-    return { ok: true, subscriptionId: String(subId) };
+    return { ok: true, providerId: String(providerId), name };
   } catch (err) {
-    // AbortSignal.timeout fires a DOMException named 'TimeoutError'.
     if (err instanceof Error && err.name === "TimeoutError") {
       return {
         ok: false,
         status: 0,
-        message: `timed out after ${WEBHOOK_TIMEOUT_MS}ms calling ${base}/webhooks/register — endpoint may not exist on this iCabbi cluster`,
+        message: `timed out after ${WEBHOOK_TIMEOUT_MS}ms calling ${base}/eventlisteners/create`,
       };
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message: msg };
+    return {
+      ok: false,
+      status: 0,
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
-export async function deleteWebhookSubscription(args: {
-  appKey: string;
-  secretKey: string;
-  subscriptionId: string;
-  /** Per-partner API base URL override; see ICabbiCredentials.apiBaseUrl. */
-  apiBaseUrl?: string;
-}): Promise<{ ok: boolean; status: number; message?: string }> {
-  const base = resolveBaseUrl(args.apiBaseUrl);
+async function deleteListener(
+  base: string,
+  appKey: string,
+  secretKey: string,
+  id: string,
+): Promise<{ ok: boolean; status: number; message?: string }> {
   try {
     const res = await fetch(
-      `${base}/webhooks/${encodeURIComponent(args.subscriptionId)}`,
+      `${base}/eventlisteners/delete/${encodeURIComponent(id)}`,
       {
-        method: "DELETE",
+        method: "POST",
         headers: {
-          "App-Key": args.appKey,
-          "Secret-Key": args.secretKey,
+          "App-Key": appKey,
+          "Secret-Key": secretKey,
           Accept: "application/json",
         },
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       },
     );
+    // 404 means it's already gone — treat as success for our purposes.
     if (!res.ok && res.status !== 404) {
       const text = await res.text().catch(() => "");
       return { ok: false, status: res.status, message: text.slice(0, 300) };
     }
     return { ok: true, status: res.status };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message: msg };
+    return {
+      ok: false,
+      status: 0,
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
+}
+
+/**
+ * Compatibility shim — old name pointing at the new function. Lets the
+ * integration page migrate one step at a time. Will be removed once
+ * #237 lands.
+ *
+ * @deprecated use resetWebhookListeners
+ */
+export async function registerWebhookSubscription(_args: {
+  appKey: string;
+  secretKey: string;
+  url: string;
+  sharedSecret: string;
+  apiBaseUrl?: string;
+}): Promise<
+  | { ok: true; subscriptionId: string }
+  | { ok: false; status: number; message: string }
+> {
+  return {
+    ok: false,
+    status: 410,
+    message:
+      "registerWebhookSubscription is removed — call resetWebhookListeners instead. " +
+      "The /webhooks/register endpoint doesn't exist on iCabbi; we use /eventlisteners/create.",
+  };
+}
+
+/**
+ * Compatibility shim — bulk-delete using the new endpoint. Lets the
+ * integration page disconnect partners onboarded under the old
+ * webhookSubscriptionId shape during the transition window.
+ *
+ * @deprecated use resetWebhookListeners with empty events
+ */
+export async function deleteWebhookSubscription(args: {
+  appKey: string;
+  secretKey: string;
+  subscriptionId: string;
+  apiBaseUrl?: string;
+}): Promise<{ ok: boolean; status: number; message?: string }> {
+  const base = resolveBaseUrl(args.apiBaseUrl);
+  return deleteListener(base, args.appKey, args.secretKey, args.subscriptionId);
 }
 
 export class ICabbiAdapter implements PartnerAdapter {

@@ -1,3 +1,14 @@
+# pnpm v10+ config (the "pnpm" key in package.json is no longer read).
+#
+# onlyBuiltDependencies allows the listed packages to run install scripts.
+# pnpm 10 refuses to run postinstall scripts by default for supply-chain
+# safety. @sentry/cli's postinstall downloads the platform-specific
+# sentry-cli binary; without this allowlist, `pnpm install` exits
+# non-zero with ERR_PNPM_IGNORED_BUILDS.
+#
+# esbuild + sharp are pnpm's standard recommendations — they have native
+# binaries too. Adding them defensively in case a future dep pulls them.
 onlyBuiltDependencies:
+  - "@sentry/cli"
   - esbuild
   - sharp

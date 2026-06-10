@@ -31,6 +31,10 @@ export type WebhookOutcome =
   | "duplicate"
   | "ack_unhandled"
   | "signature_invalid"
+  // auth_invalid covers both HMAC-failed AND token-mismatch cases. We
+  // keep signature_invalid for backwards-compat (older deliveries used
+  // it before the token-in-URL path was added).
+  | "auth_invalid"
   | "error";
 
 /**

@@ -52,7 +52,7 @@ X-Karhoo-Request-Signature: <hex digest>
 
 Replay protection: requests with `sent_at` older than 5 minutes are rejected (`401 stale_event`). Set `WEBHOOK_MAX_AGE_MS` env var on our side to tune.
 
-> **iCabbi-side staging note (temporary):** if a partner can't sign (their UI takes only a URL), set `ICABBI_SKIP_WEBHOOK_HMAC=true` on our deployment. Replay-protection + idempotency still enforced. Production must turn this off once the partner's signing convention is confirmed.
+> **Partners that can't sign (iCabbi and similar):** use the token-in-URL path instead of HMAC. Register the callback as `https://exchange.example/api/webhooks/ingest/<partnerId>?token=<webhookSecret>` — the inbound route compares the query token in constant time against the stored secret. The integration page does this automatically when you click Connect; for manual registration the URL is shown there with the token rendered.
 
 ---
 
@@ -336,6 +336,6 @@ See `docs/CANONICAL_FIELDS.md` in our repo for the full canonical field catalogu
 
 ## Contact
 
-For integration issues: <ops@howl.ie> *(pilot phase — moves to a partner-specific channel post-launch)*.
+For integration issues: <ops@theexchange.example> *(pilot phase — moves to a partner-specific channel post-launch)*.
 For commercial: OG.
 Engineering: this repo's PRs.

@@ -85,39 +85,38 @@ export async function POST(
   // including any linefeeds / whitespace. Re-parsing then re-serializing would
   // break verification.
   const rawBody = await req.text();
-  const provided = req.headers.get(SIGNATURE_HEADER) ?? "";
+  const providedSig = req.headers.get(SIGNATURE_HEADER) ?? "";
 
-  // TEMPORARY (2026-06-08 — iCabbi staging integration).
+  // Two authentication paths, tried in order:
   //
-  // iCabbi's UI for outbound webhook configuration takes a URL only — no
-  // place to enter a signing secret. Until iCabbi confirms what signing
-  // convention they use (item #4 in ICABBI_DEPENDENCIES.md — possibly
-  // App-Key/Secret-Key as HMAC material, possibly via separate API
-  // registration, possibly no signing at all), we need a way to accept
-  // their webhooks without HMAC verification so the inbound demo flow
-  // works.
+  //   1. `?token=<secret>` query parameter — for partners that can't sign
+  //      outbound webhooks (iCabbi, most legacy dispatchers). The token is
+  //      the same shared secret we'd use as HMAC material. Constant-time
+  //      compare against creds.webhookSecret.
   //
-  // ICABBI_SKIP_WEBHOOK_HMAC=true bypasses signature check ONLY. Replay
-  // protection (sent_at window), idempotency (envelope id), and rate
-  // limiting are still enforced. Every skipped verification logs a loud
-  // warning that turns up in audit + Sentry.
+  //   2. X-Karhoo-Request-Signature header (HMAC-SHA512 of the raw body) —
+  //      for partners that DO sign (Karhoo and anyone following its
+  //      convention).
   //
-  // MUST be set to false (or unset) in production once iCabbi confirms
-  // the real signing scheme. Tracked in HANDOVER.md.
-  const skipHmac = process.env.ICABBI_SKIP_WEBHOOK_HMAC === "true";
-  if (!skipHmac && !verifyHmacSha512(rawBody, provided, creds.webhookSecret)) {
+  // At least one path must pass. The ICABBI_SKIP_WEBHOOK_HMAC env-var
+  // bypass that we used during early staging is removed — the token path
+  // is the proper solution.
+  const tokenFromQuery = req.nextUrl.searchParams.get("token") ?? "";
+  const tokenAuthOk = tokenFromQuery.length > 0
+    && safeCompareStrings(tokenFromQuery, creds.webhookSecret);
+  const hmacAuthOk = providedSig.length > 0
+    && verifyHmacSha512(rawBody, providedSig, creds.webhookSecret);
+
+  if (!tokenAuthOk && !hmacAuthOk) {
     console.warn(
-      `[webhook] HMAC verification failed for partner ${partnerId} (sig provided: ${provided ? "yes" : "no"})`,
+      `[webhook] auth failed for partner ${partnerId} (token=${tokenFromQuery ? "present" : "absent"}, sig=${providedSig ? "present" : "absent"})`,
     );
-    await recordRejectedDelivery(`ingest:${partnerId}`, "signature_invalid", { raw_length: rawBody.length });
-    return NextResponse.json({ error: "invalid_signature" }, { status: 401 });
-  }
-  if (skipHmac) {
-    console.warn(
-      `[webhook] HMAC verification BYPASSED for partner ${partnerId} ` +
-        `(ICABBI_SKIP_WEBHOOK_HMAC=true). Sig provided: ${provided ? "yes" : "no"}. ` +
-        `THIS IS A TEMPORARY STAGING ACCOMMODATION — must be off in production.`,
-    );
+    await recordRejectedDelivery(`ingest:${partnerId}`, "auth_invalid", {
+      raw_length: rawBody.length,
+      had_token: tokenFromQuery.length > 0,
+      had_sig: providedSig.length > 0,
+    });
+    return NextResponse.json({ error: "invalid_auth" }, { status: 401 });
   }
 
   // Parse envelope. iCabbi/Karhoo envelope (assumed shape — iCabbi's actual
@@ -336,6 +335,23 @@ function verifyHmacSha512(body: string, providedHex: string, secret: string): bo
   if (expectedHex.length !== providedHex.length) return false;
   try {
     return timingSafeEqual(Buffer.from(expectedHex, "utf8"), Buffer.from(providedHex.toLowerCase(), "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Constant-time string equality. Used for token-in-URL auth — comparing
+ * the provided ?token=<secret> against partners.credentials.webhookSecret
+ * via timingSafeEqual prevents byte-by-byte timing attacks. Returns
+ * false for unequal-length inputs (the length check itself is the only
+ * non-constant-time step, which is fine — leaking length doesn't help
+ * an attacker for a fixed-length opaque secret).
+ */
+function safeCompareStrings(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
   } catch {
     return false;
   }
