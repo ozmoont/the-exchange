@@ -50,7 +50,17 @@ async function sendLinkAction(formData: FormData) {
     const url = new URL("/api/auth/verify", appUrl);
     url.searchParams.set("token", token);
     if (nextPath) url.searchParams.set("next", nextPath);
-    await sendMagicLinkEmail({ to: email, url: url.toString() });
+    // A delivery failure (e.g. Resend rejecting an unverified sender) must not
+    // crash the sign-in page. Swallow it and fall through to the same neutral
+    // "link sent" response — surfacing it would both 500 the page and leak that
+    // this address is on the allowlist. Log for ops; never log the token/URL.
+    try {
+      await sendMagicLinkEmail({ to: email, url: url.toString() });
+    } catch (err) {
+      console.error(
+        `[auth] magic-link email failed to send for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } else {
     console.warn(`[auth] Login attempt for non-allowlisted email: ${email}`);
   }
