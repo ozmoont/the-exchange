@@ -75,15 +75,16 @@ describe("fanOutQuote — synthetic fallback", () => {
   });
 
   it("computes ETA roughly proportional to distance at 30km/h", async () => {
-    // Centroid 15km away → ETA = (15/30)*60 = 30 minutes
-    // London → Watford is roughly that.
+    // Pickup is Trafalgar Square (51.507, -0.128); this centroid is ~24.7km
+    // straight-line away, so ETA = (24.7/30)*60 ≈ 50 min. The point of the
+    // test is that ETA scales with distance and lands in a sane mid-range —
+    // not a single magic number — so we assert a generous band around it.
     const results = await fanOutQuote(
       [{ recipientId: "PARTNER_A", centroidLat: 51.655, centroidLng: -0.396 }],
       booking,
     );
     expect(results[0].quote.available).toBe(true);
-    // Allow ±10 min slack since haversine vs. ETA math has lots of slop
-    expect(results[0].quote.etaMinutes).toBeGreaterThanOrEqual(15);
-    expect(results[0].quote.etaMinutes).toBeLessThanOrEqual(45);
+    expect(results[0].quote.etaMinutes).toBeGreaterThanOrEqual(30);
+    expect(results[0].quote.etaMinutes).toBeLessThanOrEqual(55);
   });
 });

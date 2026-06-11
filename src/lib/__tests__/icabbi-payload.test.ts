@@ -65,7 +65,16 @@ describe("normaliseICabbiInboundBooking", () => {
   });
 
   it("accepts camelCase booking_type alias bookingType", () => {
-    const r = normaliseICabbiInboundBooking({ ...valid, bookingType: "PREBOOK", scheduled_at: "2026-06-08T12:00:00Z" });
+    // The source prefers snake_case (`booking_type`) over camelCase
+    // (`bookingType`). The shared `valid` fixture already sets
+    // booking_type: "ASAP", which would shadow the alias under test, so we
+    // drop it here to actually exercise the camelCase path.
+    const { booking_type: _omit, ...validNoType } = valid;
+    const r = normaliseICabbiInboundBooking({
+      ...validNoType,
+      bookingType: "PREBOOK",
+      scheduled_at: "2026-06-08T12:00:00Z",
+    });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.booking.bookingType).toBe("prebook");
